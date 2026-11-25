@@ -198,28 +198,33 @@ public:
   Napi::Value hasPayloadType(const Napi::CallbackInfo &info)
   {
     Napi::Env env = info.Env();
-    if (info.Length() < 1 || !info[0].IsNumber())
+    if (info.Length() < 1)
     {
       Napi::TypeError::New(env, "We expect (Number) as param").ThrowAsJavaScriptException();
       return env.Null();
     }
 
-    return Napi::Boolean::New(env, mMediaPtr->hasPayloadType(info[0].As<Napi::Number>().Int32Value()));
+    int payloadType = 0;
+    if (!parsePayloadType(env, info[0], "payloadType", payloadType))
+      return env.Null();
+    return Napi::Boolean::New(env, mMediaPtr->hasPayloadType(payloadType));
   }
 
   void addRTXCodec(const Napi::CallbackInfo &info)
   {
     Napi::Env env = info.Env();
-    if (info.Length() < 3 || !info[0].IsNumber() || !info[1].IsNumber() || !info[2].IsNumber())
+    if (info.Length() < 3)
     {
       Napi::TypeError::New(env, "We expect (Number,Number,Number) as param").ThrowAsJavaScriptException();
       return;
     }
 
-    int payloadType = info[0].As<Napi::Number>().Int32Value();
-    int originalPayloadType = info[1].As<Napi::Number>().Int32Value();
+    int payloadType = 0;
+    int originalPayloadType = 0;
     uint32_t clockRate = 0;
-    if (!parseNonNegativeUint32(env, info[2], "clockRate", clockRate))
+    if (!parsePayloadType(env, info[0], "payloadType", payloadType) ||
+        !parsePayloadType(env, info[1], "originalPayloadType", originalPayloadType) ||
+        !parseNonNegativeUint32(env, info[2], "clockRate", clockRate))
       return;
     mMediaPtr->addRtxCodec(payloadType, originalPayloadType, clockRate);
   }

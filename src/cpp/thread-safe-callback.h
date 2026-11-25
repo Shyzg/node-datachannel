@@ -2,12 +2,17 @@
 #define THREAD_SAFE_CALLBACK_H
 
 #include <napi.h>
+#include <rtc/rtc.hpp>
 
 #include <cstddef>
+#include <cstdint>
 #include <deque>
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
+#include <string>
+#include <variant>
 #include <vector>
 
 class ThreadSafeCallback
@@ -17,6 +22,8 @@ public:
   using arg_func_t = std::function<void(napi_env, arg_vector_t &)>;
   using dispatch_func_t = std::function<void(Napi::Env)>;
   using cleanup_func_t = std::function<void()>;
+  using message_variant_t = std::variant<rtc::binary, std::string>;
+  using message_handler_t = std::function<void(Napi::Env, uint64_t, message_variant_t &&)>;
 
   ThreadSafeCallback(Napi::Function callback, bool unref = false);
   explicit ThreadSafeCallback(Napi::Env env, bool unref = true);
@@ -28,10 +35,13 @@ public:
   ThreadSafeCallback &operator=(const ThreadSafeCallback &) = delete;
   ThreadSafeCallback &operator=(ThreadSafeCallback &&) = delete;
 
+  void setMessageHandler(message_handler_t handler);
+
   void call(
       arg_func_t argFunc, cleanup_func_t cleanupFunc = []() {});
   void dispatch(
-      dispatch_func_t fn, cleanup_func_t cleanupFunc = []() {});
+      dispatch_func_t fn, cleanup_func_t cleanupFunc = []() {}, bool isClose = false);
+  void dispatchMessage(uint64_t gen, message_variant_t message, bool insertBeforeClose = false);
   void cancel();
 
   class CancelException : public std::exception
@@ -40,16 +50,24 @@ public:
   };
 
 private:
+  struct MessageItem
+  {
+    uint64_t gen = 0;
+    message_variant_t message;
+  };
   struct CallbackData
   {
     arg_func_t argFunc;
     dispatch_func_t dispatchFunc;
     cleanup_func_t cleanupFunc;
+    std::optional<MessageItem> messageItem;
+    bool isClose = false;
   };
   struct State
   {
     std::mutex mutex;
     bool aborted = false;
+    message_handler_t messageHandler;
     std::deque<CallbackData> pending;
   };
   using ContextType = std::shared_ptr<State>;

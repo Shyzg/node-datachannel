@@ -1,5 +1,7 @@
 #include "web-socket-wrapper.h"
 
+#include <cctype>
+
 Napi::Object WebSocketWrapper::Init(Napi::Env env, Napi::Object exports)
 {
   Napi::HandleScope scope(env);
@@ -46,6 +48,7 @@ WebSocketWrapper::WebSocketWrapper(const Napi::CallbackInfo &info) : ChannelWrap
   if (info.Length() == 0 || info[0].IsUndefined())
   {
     mCanDetectPrematureClose = false;
+    ActiveInstanceGuard guard;
     try
     {
       mChannelPtr = std::make_shared<rtc::WebSocket>();
@@ -56,7 +59,7 @@ WebSocketWrapper::WebSocketWrapper(const Napi::CallbackInfo &info) : ChannelWrap
           .ThrowAsJavaScriptException();
       return;
     }
-    registerInstance(env);
+    guard.commit(mAddonData, env, &AddonData::webSockets, this);
     return;
   }
 
@@ -116,7 +119,7 @@ WebSocketWrapper::WebSocketWrapper(const Napi::CallbackInfo &info) : ChannelWrap
   if (auto val = getDefined("connectionTimeout"))
   {
     int64_t timeoutMs = 0;
-    if (!parseNonNegativeInt64(env, val, "connectionTimeout", timeoutMs))
+    if (!parseNonNegativeDurationMs(env, val, "connectionTimeout", timeoutMs))
       return;
     webSocketConfig.connectionTimeout = std::chrono::milliseconds(timeoutMs);
   }
@@ -124,7 +127,7 @@ WebSocketWrapper::WebSocketWrapper(const Napi::CallbackInfo &info) : ChannelWrap
   if (auto val = getDefined("pingInterval"))
   {
     int64_t intervalMs = 0;
-    if (!parseNonNegativeInt64(env, val, "pingInterval", intervalMs))
+    if (!parseNonNegativeDurationMs(env, val, "pingInterval", intervalMs))
       return;
     webSocketConfig.pingInterval = std::chrono::milliseconds(intervalMs);
   }
@@ -137,45 +140,11 @@ WebSocketWrapper::WebSocketWrapper(const Napi::CallbackInfo &info) : ChannelWrap
     webSocketConfig.maxOutstandingPings = static_cast<int>(std::min<uint32_t>(pings, std::numeric_limits<int>::max()));
   }
 
-  if (auto val = getDefined("caCertificatePemFile"))
-  {
-    if (!val.IsString())
-    {
-      Napi::TypeError::New(env, "caCertificatePemFile must be a string").ThrowAsJavaScriptException();
-      return;
-    }
-    webSocketConfig.caCertificatePemFile = val.ToString();
-  }
-
-  if (auto val = getDefined("certificatePemFile"))
-  {
-    if (!val.IsString())
-    {
-      Napi::TypeError::New(env, "certificatePemFile must be a string").ThrowAsJavaScriptException();
-      return;
-    }
-    webSocketConfig.certificatePemFile = val.ToString();
-  }
-
-  if (auto val = getDefined("keyPemFile"))
-  {
-    if (!val.IsString())
-    {
-      Napi::TypeError::New(env, "keyPemFile must be a string").ThrowAsJavaScriptException();
-      return;
-    }
-    webSocketConfig.keyPemFile = val.ToString();
-  }
-
-  if (auto val = getDefined("keyPemPass"))
-  {
-    if (!val.IsString())
-    {
-      Napi::TypeError::New(env, "keyPemPass must be a string").ThrowAsJavaScriptException();
-      return;
-    }
-    webSocketConfig.keyPemPass = val.ToString();
-  }
+  if (!parseOptionalString(env, config, "caCertificatePemFile", webSocketConfig.caCertificatePemFile) ||
+      !parseOptionalString(env, config, "certificatePemFile", webSocketConfig.certificatePemFile) ||
+      !parseOptionalString(env, config, "keyPemFile", webSocketConfig.keyPemFile) ||
+      !parseOptionalString(env, config, "keyPemPass", webSocketConfig.keyPemPass))
+    return;
 
   if (auto val = getDefined("maxMessageSize"))
   {
@@ -185,6 +154,19 @@ WebSocketWrapper::WebSocketWrapper(const Napi::CallbackInfo &info) : ChannelWrap
     webSocketConfig.maxMessageSize = sizeVal;
   }
 
+  mDisableTlsVerification = webSocketConfig.disableTlsVerification;
+
+#ifdef _WIN32
+  if (webSocketConfig.caCertificatePemFile.has_value() && !mDisableTlsVerification)
+  {
+    Napi::Error::New(env, "TLS certificate verification with caCertificatePemFile is not supported on Windows by "
+                          "libdatachannel")
+        .ThrowAsJavaScriptException();
+    return;
+  }
+#endif
+
+  ActiveInstanceGuard guard;
   try
   {
     mChannelPtr = std::make_shared<rtc::WebSocket>(webSocketConfig);
@@ -196,7 +178,7 @@ WebSocketWrapper::WebSocketWrapper(const Napi::CallbackInfo &info) : ChannelWrap
     return;
   }
 
-  registerInstance(env);
+  guard.commit(mAddonData, env, &AddonData::webSockets, this);
 }
 
 WebSocketWrapper::~WebSocketWrapper()
@@ -219,9 +201,22 @@ void WebSocketWrapper::open(const Napi::CallbackInfo &info)
     return;
   }
 
+  std::string url = info[0].As<Napi::String>().ToString();
+#ifdef _WIN32
+  if (!mDisableTlsVerification && url.size() >= 4 && std::tolower(static_cast<unsigned char>(url[0])) == 'w' &&
+      std::tolower(static_cast<unsigned char>(url[1])) == 's' &&
+      std::tolower(static_cast<unsigned char>(url[2])) == 's' && url[3] == ':')
+  {
+    Napi::Error::New(env, "TLS certificate verification for wss:// is not supported on Windows by libdatachannel; "
+                          "set disableTlsVerification: true to opt in explicitly")
+        .ThrowAsJavaScriptException();
+    return;
+  }
+#endif
+
   try
   {
-    mChannelPtr->open(info[0].As<Napi::String>().ToString());
+    mChannelPtr->open(url);
     mCanDetectPrematureClose = true;
   }
   catch (std::exception &ex)

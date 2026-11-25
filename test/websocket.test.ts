@@ -305,12 +305,97 @@ describe('Websocket', () => {
           client.open(`wss://127.0.0.1:${srv.port()}`);
         });
 
-      assert.equal(await connectOnce({ caCertificatePemFile: certFile }), 'tls:ping');
-      assert.equal(await connectOnce({ disableTlsVerification: true }), 'tls:ping');
-      await assert.rejects(() => connectOnce({}), /TLS/i);
+      if (process.platform === 'win32') {
+        assert.throws(
+          () => new nodeDataChannel.WebSocket({ caCertificatePemFile: certFile }),
+          /not supported on Windows/i,
+        );
+        const strictClient = new nodeDataChannel.WebSocket();
+        assert.throws(
+          () => strictClient.open(`wss://127.0.0.1:${srv.port()}`),
+          /not supported on Windows/i,
+        );
+        strictClient.close();
+        assert.equal(await connectOnce({ disableTlsVerification: true }), 'tls:ping');
+      } else {
+        assert.equal(await connectOnce({ caCertificatePemFile: certFile }), 'tls:ping');
+        assert.equal(await connectOnce({ disableTlsVerification: true }), 'tls:ping');
+        await assert.rejects(() => connectOnce({}), /TLS/i);
+      }
       srv.stop();
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
+  });
+
+  test('cleans up no-callback sockets on close, delivers pre-close messages, replaces onClient, and bounds timeouts', async () => {
+    assert.throws(
+      () => new nodeDataChannel.WebSocket({ connectionTimeout: Number.MAX_SAFE_INTEGER }),
+      /connectionTimeout/,
+    );
+    assert.throws(
+      () => new nodeDataChannel.WebSocket({ pingInterval: Number.MAX_SAFE_INTEGER }),
+      /pingInterval/,
+    );
+    assert.throws(
+      () => new nodeDataChannel.WebSocketServer({ connectionTimeout: Number.MAX_SAFE_INTEGER }),
+      /connectionTimeout/,
+    );
+
+    const srv = new nodeDataChannel.WebSocketServer({ bindAddress: '127.0.0.1', port: 0 });
+    const port = srv.port();
+
+    // Verify onClient replaces previous handler instead of accumulating listeners
+    let firstHandlerCalls = 0;
+    const acceptedDeferred = Promise.withResolvers<nodeDataChannel.WebSocket>();
+    srv.onClient(() => {
+      firstHandlerCalls++;
+    });
+    srv.onClient((ws) => {
+      acceptedDeferred.resolve(ws);
+    });
+
+    const c1 = new nodeDataChannel.WebSocket();
+    await new Promise<void>((resolve) => {
+      c1.onOpen(resolve);
+      c1.open(`ws://127.0.0.1:${port}`);
+    });
+    const accepted = await acceptedDeferred.promise;
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(firstHandlerCalls, 0);
+
+    // Closing a socket with no registered callbacks must release mChannelPtr immediately
+    accepted.close();
+    assert.throws(() => accepted.onOpen(() => {}), /destroyed WebSocket/);
+    c1.forceClose();
+
+    // Pre-close message delivery works regardless of onClosed vs onMessage registration order
+    for (const order of ['onMessage-first', 'onClosed-first'] as const) {
+      const got: string[] = [];
+      const closed = Promise.withResolvers<void>();
+      srv.onClient((ws) => {
+        setTimeout(() => {
+          if (order === 'onMessage-first') {
+            ws.onMessage((m) => got.push(String(m)));
+            ws.onClosed(() => closed.resolve());
+          } else {
+            ws.onClosed(() => closed.resolve());
+            ws.onMessage((m) => got.push(String(m)));
+          }
+        }, 50);
+      });
+
+      const cli = new nodeDataChannel.WebSocket();
+      cli.onOpen(() => {
+        cli.sendMessage(`payload-${order}`);
+        setTimeout(() => cli.close(), 15);
+      });
+      cli.open(`ws://127.0.0.1:${port}`);
+      await closed.promise;
+      assert.deepEqual(got, [`payload-${order}`]);
+      cli.forceClose();
+    }
+
+    srv.stop();
   });
 });

@@ -29,7 +29,8 @@ std::optional<rtc::AV1RtpPacketizer::Packetization> strToPacketization(const std
 }
 
 template <typename RtcPacketizer>
-std::shared_ptr<RtcPacketizer> createH26xPacketizer(const Napi::CallbackInfo &info, Napi::ObjectReference &outRef)
+std::shared_ptr<RtcPacketizer> createH26xPacketizer(const Napi::CallbackInfo &info, Napi::ObjectReference &outRef,
+                                                    size_t minFragmentSize)
 {
   Napi::Env env = info.Env();
   if (info.Length() < 2)
@@ -52,7 +53,7 @@ std::shared_ptr<RtcPacketizer> createH26xPacketizer(const Napi::CallbackInfo &in
     return nullptr;
 
   size_t maxFragmentSize = 0;
-  if (!parseOptionalMaxFragmentSize(info, 2, maxFragmentSize))
+  if (!parseOptionalMaxFragmentSize(info, 2, maxFragmentSize, minFragmentSize))
     return nullptr;
 
   return std::make_shared<RtcPacketizer>(separatorOpt.value(), rtpConfig, maxFragmentSize);
@@ -80,7 +81,8 @@ Napi::Object H264RtpPacketizerWrapper::Init(Napi::Env env, Napi::Object exports)
 
 H264RtpPacketizerWrapper::H264RtpPacketizerWrapper(const Napi::CallbackInfo &info) : RtpPacketizerBase(info)
 {
-  mPacketizerPtr = createH26xPacketizer<rtc::H264RtpPacketizer>(info, mRtpConfigObject);
+  // H.264 FU-A header is 2 bytes, so fragments must be >= 3 bytes to make forward progress.
+  mPacketizerPtr = createH26xPacketizer<rtc::H264RtpPacketizer>(info, mRtpConfigObject, /*minFragmentSize=*/3);
   if (mPacketizerPtr)
     info.This().As<Napi::Object>().TypeTag(&kH264RtpPacketizerTypeTag);
 }
@@ -92,7 +94,8 @@ Napi::Object H265RtpPacketizerWrapper::Init(Napi::Env env, Napi::Object exports)
 
 H265RtpPacketizerWrapper::H265RtpPacketizerWrapper(const Napi::CallbackInfo &info) : RtpPacketizerBase(info)
 {
-  mPacketizerPtr = createH26xPacketizer<rtc::H265RtpPacketizer>(info, mRtpConfigObject);
+  // H.265 FU header is 3 bytes, so fragments must be >= 4 bytes to make forward progress.
+  mPacketizerPtr = createH26xPacketizer<rtc::H265RtpPacketizer>(info, mRtpConfigObject, /*minFragmentSize=*/4);
   if (mPacketizerPtr)
     info.This().As<Napi::Object>().TypeTag(&kH265RtpPacketizerTypeTag);
 }
@@ -123,8 +126,9 @@ AV1RtpPacketizerWrapper::AV1RtpPacketizerWrapper(const Napi::CallbackInfo &info)
   if (!rtpConfig)
     return;
 
+  // AV1 aggregation header is 1 byte, so fragments must be >= 2 bytes to make forward progress.
   size_t maxFragmentSize = 0;
-  if (!parseOptionalMaxFragmentSize(info, 2, maxFragmentSize))
+  if (!parseOptionalMaxFragmentSize(info, 2, maxFragmentSize, /*minFragmentSize=*/2))
     return;
 
   mPacketizerPtr = std::make_shared<rtc::AV1RtpPacketizer>(packetizationOpt.value(), rtpConfig, maxFragmentSize);

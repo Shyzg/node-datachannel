@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { Readable } from 'node:stream';
 import { after, describe, test } from 'node:test';
 import * as nodeDataChannel from '../src/lib/index.ts';
 
@@ -210,6 +211,34 @@ describe('DataChannel streams', () => {
 
     txStream.destroy();
     for (const ch of rxChannels) ch.close();
+    p1.close();
+    p2.close();
+  });
+
+  test('supports piping and calling end() before the DataChannel opens', async () => {
+    const p1 = new nodeDataChannel.PeerConnection('EarlyEnd1', { iceServers: [] });
+    const p2 = new nodeDataChannel.PeerConnection('EarlyEnd2', { iceServers: [] });
+    p1.onLocalDescription((s, t) => p2.setRemoteDescription(s, t));
+    p2.onLocalDescription((s, t) => p1.setRemoteDescription(s, t));
+    p1.onLocalCandidate((c, m) => p2.addRemoteCandidate(c, m));
+    p2.onLocalCandidate((c, m) => p1.addRemoteCandidate(c, m));
+
+    const received: string[] = [];
+    const rxClosed = Promise.withResolvers<void>();
+    p2.onDataChannel((dc) => {
+      dc.onMessage((msg) => received.push(String(msg)));
+      dc.onClosed(() => rxClosed.resolve());
+    });
+
+    const txStream = new nodeDataChannel.DataChannelStream(p1.createDataChannel('early-end'));
+    const errors: Error[] = [];
+    txStream.on('error', (err) => errors.push(err));
+
+    Readable.from(['first', 'second', 'third']).pipe(txStream);
+
+    await rxClosed.promise;
+    assert.deepEqual(errors, []);
+    assert.deepEqual(received, ['first', 'second', 'third']);
     p1.close();
     p2.close();
   });

@@ -29,6 +29,11 @@ describe('Module Definition', () => {
 
     const pc = new nodeDataChannel.PeerConnection('LogPeer', { iceServers: [] });
     pc.close();
+    assert.doesNotThrow(() => nodeDataChannel.initLogger('None'));
+    assert.throws(
+      () => nodeDataChannel.initLogger('Warn' as unknown as nodeDataChannel.LogLevel),
+      /Unknown LogLevel/,
+    );
     assert.doesNotThrow(() => nodeDataChannel.initLogger('Warning'));
   });
 });

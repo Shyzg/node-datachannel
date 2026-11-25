@@ -87,6 +87,15 @@ void RtcWrapper::initLogger(const Napi::CallbackInfo &info)
     logLevel = rtc::LogLevel::Error;
   else if (logLevelStr == "Fatal")
     logLevel = rtc::LogLevel::Fatal;
+  else if (logLevelStr == "None")
+    logLevel = rtc::LogLevel::None;
+  else
+  {
+    Napi::TypeError::New(
+        env, "Unknown LogLevel, expected \"Verbose\", \"Debug\", \"Info\", \"Warning\", \"Error\", \"Fatal\", or \"None\"")
+        .ThrowAsJavaScriptException();
+    return;
+  }
 
   try
   {
@@ -187,11 +196,16 @@ void RtcWrapper::cleanup(const Napi::CallbackInfo &info)
     clearLogCallbackIfActive(data->logCallback);
 
     // Only run process-global rtc::Cleanup() when no other Node workers still hold active instances.
+    // Unique lock blocks concurrent constructors until cleanup finishes, preventing a race where
+    // another worker pins libdatachannel's init_token and causes rtc::Cleanup() to time out.
     bool timedOut = false;
-    if (gActiveNativeInstances.load() == 0)
     {
-      const auto timeout = std::chrono::seconds(10);
-      timedOut = rtc::Cleanup().wait_for(timeout) == std::future_status::timeout;
+      std::unique_lock<std::shared_mutex> lock(gLifecycleMutex);
+      if (gActiveNativeInstances.load() == 0)
+      {
+        const auto timeout = std::chrono::seconds(10);
+        timedOut = rtc::Cleanup().wait_for(timeout) == std::future_status::timeout;
+      }
     }
 
     if (timedOut)

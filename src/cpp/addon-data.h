@@ -4,6 +4,7 @@
 #include <atomic>
 #include <cstdint>
 #include <memory>
+#include <shared_mutex>
 #include <unordered_set>
 
 #include <napi.h>
@@ -24,6 +25,8 @@ class WebSocketServerWrapper;
 
 // Process-wide count of live native wrapper instances across all Node environments/workers
 inline std::atomic<int64_t> gActiveNativeInstances{0};
+// Coordinates native instance creation (shared lock) with process-wide rtc::Cleanup() (unique lock)
+inline std::shared_mutex gLifecycleMutex;
 
 struct AddonData
 {

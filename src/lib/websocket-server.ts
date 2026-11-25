@@ -36,17 +36,19 @@ export class WebSocketServer extends EventEmitter {
   }
 
   stop(): void {
+    this.#server?.stop();
+    this.#server = null;
     for (const ref of this.#clients) {
       this.#registry.unregister(ref);
       ref.deref()?.close();
     }
     this.#clients.clear();
-    this.#server?.stop();
-    this.#server = null;
     this.removeAllListeners();
   }
 
   onClient(cb: (clientSocket: WebSocket) => void): void {
-    if (this.#server) this.on('client', cb);
+    if (!this.#server) return;
+    this.removeAllListeners('client');
+    this.on('client', cb);
   }
 }

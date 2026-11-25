@@ -1,9 +1,6 @@
 #include "media-mediahandler-helper.h"
 #include "addon-data.h"
-#include "media-pacinghandler-wrapper.h"
-#include "media-rtcpnackresponder-wrapper.h"
-#include "media-rtcpreceivingsession-wrapper.h"
-#include "media-rtcpsrreporter-wrapper.h"
+#include "media-handlers-wrapper.h"
 #include "media-rtppacketizationconfig-wrapper.h"
 #include "media-rtppacketizer-wrapper.h"
 #include "wrapper-utils.h"
@@ -19,11 +16,11 @@ std::shared_ptr<rtc::MediaHandler> asMediaHandler(const Napi::Object &val)
   if (auto *p = unwrapChecked<PacingHandlerWrapper>(val, &kPacingHandlerTypeTag))
     return p->getHandlerInstance();
   if (auto *p = unwrapChecked<RtcpNackResponderWrapper>(val, &kRtcpNackResponderTypeTag))
-    return p->getResponderInstance();
+    return p->getHandlerInstance();
   if (auto *p = unwrapChecked<RtcpReceivingSessionWrapper>(val, &kRtcpReceivingSessionTypeTag))
-    return p->getSessionInstance();
+    return p->getHandlerInstance();
   if (auto *p = unwrapChecked<RtcpSrReporterWrapper>(val, &kRtcpSrReporterTypeTag))
-    return p->getReporterInstance();
+    return p->getHandlerInstance();
   if (auto *p = unwrapChecked<RtpPacketizerWrapper>(val, &kRtpPacketizerTypeTag))
     return p->getPacketizerInstance();
   return nullptr;
@@ -93,10 +90,13 @@ Napi::Value returnRtpConfig(const Napi::CallbackInfo &info, const void *ptr, con
   return ref.IsEmpty() ? env.Null() : Napi::Value(ref.Value());
 }
 
-bool parseOptionalMaxFragmentSize(const Napi::CallbackInfo &info, size_t argIndex, size_t &outSize)
+bool parseOptionalMaxFragmentSize(const Napi::CallbackInfo &info, size_t argIndex, size_t &outSize, size_t minSize)
 {
   outSize = rtc::RtpPacketizer::DefaultMaxFragmentSize;
   if (info.Length() <= argIndex || info[argIndex].IsUndefined())
     return true;
-  return parsePositiveSize(info.Env(), info[argIndex], "maxFragmentSize", outSize);
+  double maxSize = std::min(kMaxSafeInt, static_cast<double>(std::numeric_limits<size_t>::max()));
+  std::string msg = "must be at least " + std::to_string(minSize);
+  return parseBoundedInt(info.Env(), info[argIndex], "maxFragmentSize", static_cast<double>(minSize), maxSize,
+                         msg.c_str(), outSize);
 }

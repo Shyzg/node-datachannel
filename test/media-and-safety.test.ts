@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import dgram from 'node:dgram';
+import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { after, describe, test } from 'node:test';
 import { Worker } from 'node:worker_threads';
@@ -155,7 +158,26 @@ describe('Media wrappers and native safety', () => {
     assert.throws(() => new ndc.PacingHandler(0, 10), /positive finite/);
     assert.throws(() => new ndc.PacingHandler(Number.NaN, 10), /positive finite/);
     assert.throws(() => new ndc.PacingHandler(1_000_000, 0), /sendInterval must be positive/);
-    assert.throws(() => new ndc.RtcpNackResponder(-1), /maxSize must be non-negative/);
+    assert.throws(
+      () => new ndc.PacingHandler(1_000_000, Number.MAX_SAFE_INTEGER),
+      /sendInterval must be positive/,
+    );
+    assert.throws(() => new ndc.RtcpNackResponder(-1), /between 1 and 65535/);
+    assert.throws(() => new ndc.RtcpNackResponder(0), /between 1 and 65535/);
+    assert.throws(() => new ndc.RtcpNackResponder(65536), /between 1 and 65535/);
+    assert.throws(() => new ndc.RtcpNackResponder(1e12), /between 1 and 65535/);
+    assert.throws(
+      () => new ndc.H264RtpPacketizer('StartSequence', cfg, 2),
+      /maxFragmentSize must be at least 3/,
+    );
+    assert.throws(
+      () => new ndc.H265RtpPacketizer('StartSequence', cfg, 3),
+      /maxFragmentSize must be at least 4/,
+    );
+    assert.throws(
+      () => new ndc.AV1RtpPacketizer('Obu', cfg, 1),
+      /maxFragmentSize must be at least 2/,
+    );
 
     rtp.addToChain(sr);
     sr.addToChain(nack);
@@ -377,9 +399,19 @@ describe('Media wrappers and native safety', () => {
     assert.throws(() => {
       cfg.playoutDelayMax = Number.NaN;
     }, /0 and 65535/);
-    assert.throws(() => new ndc.RtcpNackResponder(Number.NaN), /non-negative/);
-    assert.throws(() => new ndc.RtcpNackResponder(Number.POSITIVE_INFINITY), /non-negative/);
+    assert.throws(() => new ndc.RtcpNackResponder(Number.NaN), /between 1 and 65535/);
+    assert.throws(() => new ndc.RtcpNackResponder(Number.POSITIVE_INFINITY), /between 1 and 65535/);
     assert.throws(() => new ndc.PacingHandler(1_000_000, Number.POSITIVE_INFINITY), /positive/);
+
+    const badMedia = new ndc.Video('v', 'SendOnly');
+    assert.throws(() => badMedia.addH264Codec(-1), /between 0 and 127/);
+    assert.throws(() => badMedia.addH264Codec(128), /between 0 and 127/);
+    assert.throws(() => badMedia.addH264Codec(Number.NaN), /between 0 and 127/);
+    assert.throws(() => badMedia.addRTXCodec(-5, 96, 90000), /between 0 and 127/);
+    assert.throws(() => badMedia.addRTXCodec(97, 200, 90000), /between 0 and 127/);
+    const badAudio = new ndc.Audio('a', 'SendOnly');
+    assert.throws(() => badAudio.addOpusCodec(-1), /between 0 and 127/);
+    assert.throws(() => badAudio.addAudioCodec(128, 'opus'), /between 0 and 127/);
 
     assert.throws(
       () =>
@@ -481,5 +513,210 @@ describe('Media wrappers and native safety', () => {
     assert.equal(workerExit, 0);
     assert.ok(Date.now() - t0 < 3000);
     activePc.close();
+  });
+
+  test('sends H.264 frames end-to-end through chained RTP/RTCP/Pacing handlers', async () => {
+    const m1 = new ndc.PeerConnection('PacketizerSend', { iceServers: [] });
+    const m2 = new ndc.PeerConnection('PacketizerRecv', { iceServers: [] });
+    m1.onLocalDescription((s, t) => m2.setRemoteDescription(s, t));
+    m2.onLocalDescription((s, t) => m1.setRemoteDescription(s, t));
+    m1.onLocalCandidate((c, m) => m2.addRemoteCandidate(c, m));
+    m2.onLocalCandidate((c, m) => m1.addRemoteCandidate(c, m));
+
+    const ssrc = 0x12345678;
+    const sendVideo = new ndc.Video('video', 'SendOnly');
+    sendVideo.addH264Codec(96);
+    sendVideo.addSSRC(ssrc, 'h264-stream');
+    const sendTrack = m1.addTrack(sendVideo);
+
+    const cfg = new ndc.RtpPacketizationConfig(ssrc, 'h264-stream', 96, 90000);
+    const packetizer = new ndc.H264RtpPacketizer('StartSequence', cfg, 100);
+    const srReporter = new ndc.RtcpSrReporter(cfg);
+    const nackResponder = new ndc.RtcpNackResponder(64);
+    const pacing = new ndc.PacingHandler(10_000_000, 5);
+    packetizer.addToChain(srReporter);
+    srReporter.addToChain(nackResponder);
+    nackResponder.addToChain(pacing);
+    sendTrack.setMediaHandler(packetizer);
+
+    const receivedPackets: Buffer[] = [];
+    const gotFragments = Promise.withResolvers<void>();
+    m2.onTrack((recvTrack) => {
+      recvTrack.setMediaHandler(new ndc.RtcpReceivingSession());
+      recvTrack.onMessage((pkt) => {
+        // Ignore RTCP control packets (PT 200..207) and collect RTP packets for PT 96
+        if (pkt.length >= 12 && (pkt[1] & 0x7f) === 96) {
+          receivedPackets.push(pkt);
+          if (receivedPackets.length >= 2) gotFragments.resolve();
+        }
+      });
+    });
+
+    sendTrack.onOpen(() => {
+      // Single 180-byte Annex-B IDR NAL unit -> fragmented into >= 2 RTP FU-A packets at maxFragmentSize=100
+      const nal = Buffer.alloc(184, 0xab);
+      nal[0] = 0x00;
+      nal[1] = 0x00;
+      nal[2] = 0x00;
+      nal[3] = 0x01;
+      nal[4] = 0x65;
+      sendTrack.sendMessageBinary(nal);
+    });
+    m1.setLocalDescription();
+
+    await gotFragments.promise;
+    assert.ok(receivedPackets.length >= 2);
+    for (const pkt of receivedPackets) {
+      assert.equal(pkt.readUInt32BE(8), ssrc);
+    }
+
+    sendTrack.close();
+    m1.close();
+    m2.close();
+  });
+
+  test('covers PeerConnection/DataChannel config branches and concurrent worker cleanup', async () => {
+    const pcConfig = new ndc.PeerConnection('ConfigPeer', {
+      iceServers: [
+        { hostname: '127.0.0.1', port: 3478 },
+        {
+          hostname: '127.0.0.1',
+          port: 3478,
+          username: 'u',
+          password: 'p',
+          relayType: 'TurnUdp',
+        },
+        {
+          hostname: '127.0.0.1',
+          port: 3478,
+          username: 'u',
+          password: 'p',
+          relayType: 'TurnTcp',
+        },
+        {
+          hostname: '127.0.0.1',
+          port: 5349,
+          username: 'u',
+          password: 'p',
+          relayType: 'TurnTls',
+        },
+      ],
+      proxyServer: { type: 'Http', ip: '127.0.0.1', port: 8080 },
+      portRangeBegin: 40000,
+      portRangeEnd: 40100,
+      iceTransportPolicy: 'all',
+      enableIceTcp: true,
+      mtu: 1200,
+    });
+
+    const negDc = pcConfig.createDataChannel('negotiated', {
+      negotiated: true,
+      id: 42,
+      unordered: true,
+      maxRetransmits: 2,
+    });
+    assert.equal(negDc.getId(), 42);
+
+    const timedDc = pcConfig.createDataChannel('timed', {
+      maxPacketLifeTime: 250,
+    });
+    assert.equal(timedDc.getLabel(), 'timed');
+
+    assert.throws(
+      () =>
+        pcConfig.createDataChannel('exclusive', {
+          maxPacketLifeTime: 100,
+          maxRetransmits: 1,
+        }),
+      /exclusive/,
+    );
+    negDc.close();
+    timedDc.close();
+    pcConfig.close();
+
+    // Custom PEM certificate + key and remoteFingerprint when openssl is available
+    let hasOpenssl = false;
+    try {
+      execFileSync('openssl', ['version'], { stdio: 'ignore' });
+      hasOpenssl = true;
+    } catch {
+      hasOpenssl = false;
+    }
+    if (hasOpenssl) {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ndc-pc-cert-'));
+      const keyFile = path.join(tmpDir, 'key.pem');
+      const certFile = path.join(tmpDir, 'cert.pem');
+      try {
+        execFileSync(
+          'openssl',
+          [
+            'req',
+            '-x509',
+            '-newkey',
+            'ec',
+            '-pkeyopt',
+            'ec_paramgen_curve:prime256v1',
+            '-keyout',
+            keyFile,
+            '-out',
+            certFile,
+            '-days',
+            '1',
+            '-nodes',
+            '-subj',
+            '/CN=localhost',
+          ],
+          { stdio: 'ignore' },
+        );
+        const p1 = new ndc.PeerConnection('Cert1', {
+          iceServers: [],
+          certificatePemFile: certFile,
+          keyPemFile: keyFile,
+        });
+        const p2 = new ndc.PeerConnection('Cert2', { iceServers: [] });
+        p1.onLocalDescription((s, t) => p2.setRemoteDescription(s, t));
+        p2.onLocalDescription((s, t) => p1.setRemoteDescription(s, t));
+        p1.onLocalCandidate((c, m) => p2.addRemoteCandidate(c, m));
+        p2.onLocalCandidate((c, m) => p1.addRemoteCandidate(c, m));
+        const opened = Promise.withResolvers<void>();
+        const dc = p1.createDataChannel('fp');
+        dc.onOpen(() => opened.resolve());
+        await opened.promise;
+        const fp = p2.remoteFingerprint();
+        assert.ok(fp);
+        assert.equal(fp.algorithm, 'sha-256');
+        assert.ok(fp.value.length > 0);
+        dc.close();
+        p1.close();
+        p2.close();
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+    }
+
+    // Concurrent multi-worker create/close/cleanup stress test (must not hit 10s timeout)
+    const addonPath = path.resolve(process.cwd(), 'build/Release/node_datachannel.node');
+    const spawnRaceWorker = (iterations: number): Promise<number> =>
+      new Promise((resolve, reject) => {
+        const w = new Worker(
+          `
+          const { workerData } = require('node:worker_threads');
+          const native = require(workerData.addonPath);
+          for (let i = 0; i < workerData.iterations; i++) {
+            const pc = new native.PeerConnection('Race' + i, { iceServers: [] });
+            pc.close();
+            native.cleanup();
+          }
+          `,
+          { eval: true, workerData: { addonPath, iterations } },
+        );
+        w.on('error', reject);
+        w.on('exit', resolve);
+      });
+
+    const tStart = Date.now();
+    const exits = await Promise.all([spawnRaceWorker(4), spawnRaceWorker(4), spawnRaceWorker(4)]);
+    assert.deepEqual(exits, [0, 0, 0]);
+    assert.ok(Date.now() - tStart < 8000);
   });
 });

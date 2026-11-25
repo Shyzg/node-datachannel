@@ -37,7 +37,7 @@ IceUdpMuxListenerWrapper::IceUdpMuxListenerWrapper(const Napi::CallbackInfo &inf
 
   if (length > 0 && info[0].IsNumber())
   {
-    if (!parseUint16Port(env, info[0], "port", mPort))
+    if (!parseUint16(env, info[0], "port", mPort))
       return;
   }
   else
@@ -56,10 +56,9 @@ IceUdpMuxListenerWrapper::IceUdpMuxListenerWrapper(const Napi::CallbackInfo &inf
     mAddress = info[1].As<Napi::String>().ToString();
   }
 
+  ActiveInstanceGuard guard;
   iceUdpMuxListenerPtr = std::make_unique<rtc::IceUdpMuxListener>(mPort, mAddress);
-  mAddonData = getAddonData(env);
-  if (mAddonData && mAddonData->iceUdpMuxListeners.insert(this).second)
-    ++gActiveNativeInstances;
+  guard.commit(mAddonData, env, &AddonData::iceUdpMuxListeners, this);
 }
 
 IceUdpMuxListenerWrapper::~IceUdpMuxListenerWrapper() { doCleanup(/*fromDestructor=*/true); }

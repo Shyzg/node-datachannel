@@ -8,10 +8,7 @@
 
 #if RTC_ENABLE_MEDIA == 1
 #include "media-audio-wrapper.h"
-#include "media-pacinghandler-wrapper.h"
-#include "media-rtcpnackresponder-wrapper.h"
-#include "media-rtcpreceivingsession-wrapper.h"
-#include "media-rtcpsrreporter-wrapper.h"
+#include "media-handlers-wrapper.h"
 #include "media-rtppacketizationconfig-wrapper.h"
 #include "media-rtppacketizer-wrapper.h"
 #include "media-track-wrapper.h"

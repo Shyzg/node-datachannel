@@ -229,7 +229,7 @@ public:
 
     ensureEventQueue(env);
     mOnClosedFn = Napi::Persistent(info[0].As<Napi::Function>());
-    checkAlreadyClosed();
+    ensureCloseHook();
   }
 
   void onError(const Napi::CallbackInfo &info)
@@ -273,42 +273,30 @@ public:
 
   void onMessage(const Napi::CallbackInfo &info)
   {
-    // checkAlreadyClosed runs inside bindCallback AFTER mChannelPtr->onMessage() so any pending
-    // messages flushed by libdatachannel are queued in FIFO order BEFORE the close notification.
+    // ensureCloseHook runs inside bindCallback AFTER mChannelPtr->onMessage() and receive() draining
+    // so pending messages are always delivered in FIFO order BEFORE the close notification.
     bindCallback(
         info, "onMessage", mOnMessageFn, mOnMessageGen,
         [this](auto state, auto queue, uint64_t gen)
         {
           mChannelPtr->onMessage(
-              [this, state, queue, gen](std::variant<rtc::binary, std::string> message)
+              [state, queue, gen](std::variant<rtc::binary, std::string> message)
               {
-                queue->dispatch(
-                    [this, state, gen, message = std::move(message)](Napi::Env env)
-                    {
-                      if (!state->alive.load() || mOnMessageGen != gen || mOnMessageFn.IsEmpty())
-                        throw ThreadSafeCallback::CancelException();
-
-                      if constexpr (BinaryOnlyMessages)
-                      {
-                        if (!std::holds_alternative<rtc::binary>(message))
-                          throw ThreadSafeCallback::CancelException();
-                        auto bin = std::get<rtc::binary>(std::move(message));
-                        mOnMessageFn.Call({Napi::Buffer<std::byte>::Copy(env, bin.data(), bin.size())});
-                      }
-                      else
-                      {
-                        if (std::holds_alternative<std::string>(message))
-                        {
-                          mOnMessageFn.Call({Napi::String::New(env, std::get<std::string>(message))});
-                        }
-                        else
-                        {
-                          auto bin = std::get<rtc::binary>(std::move(message));
-                          mOnMessageFn.Call({Napi::Buffer<std::byte>::Copy(env, bin.data(), bin.size())});
-                        }
-                      }
-                    });
+                if (!state->alive.load())
+                  return;
+                queue->dispatchMessage(gen, std::move(message), /*insertBeforeClose=*/state->closeDispatched.load());
               });
+
+          // DataChannel::close() and Track::close() clear mOpenTriggered so libdatachannel's onMessage()
+          // does not flush unread messages still queued in mRecvQueue; drain them explicitly before close runs.
+          if (mChannelPtr->isClosed())
+          {
+            while (auto pendingMsg = mChannelPtr->receive())
+            {
+              queue->dispatchMessage(gen, std::move(*pendingMsg),
+                                     /*insertBeforeClose=*/state->closeDispatched.load());
+            }
+          }
         });
   }
 
@@ -319,8 +307,8 @@ public:
 
   void doCleanup(bool fromDestructor = false)
   {
-    mCloseState->alive.store(false);
-    resetCallback(mEventQueue);
+    mEvents.closeState->alive.store(false);
+    resetCallback(mEvents.queue);
     resetFuncRef(mOnOpenFn, fromDestructor);
     resetFuncRef(mOnClosedFn, fromDestructor);
     resetFuncRef(mOnErrorFn, fromDestructor);
@@ -335,23 +323,16 @@ public:
       mAddonData = nullptr;
     }
 
-    mSelfRef.release(this, fromDestructor);
+    mEvents.selfRef.release(this, fromDestructor);
   }
 
 protected:
   using PropertyDescriptor = typename Napi::ObjectWrap<Derived>::PropertyDescriptor;
 
-  struct CloseState
-  {
-    std::atomic<bool> alive{true};
-    std::atomic<bool> closeDispatched{false};
-  };
-
   void registerInstance(Napi::Env env)
   {
-    mAddonData = getAddonData(env);
-    if (mAddonData && (mAddonData->*InstancesMember).insert(static_cast<Derived *>(this)).second)
-      ++gActiveNativeInstances;
+    ActiveInstanceGuard guard;
+    guard.commit(mAddonData, env, InstancesMember, static_cast<Derived *>(this));
   }
 
   void destroyInDestructor()
@@ -370,28 +351,31 @@ protected:
   static void scheduleCloseOnce(ChannelWrapperBase *self, const std::shared_ptr<CloseState> &state,
                                 const std::shared_ptr<ThreadSafeCallback> &queue)
   {
-    if (!queue || state->closeDispatched.exchange(true))
-      return;
-
-    queue->dispatch(
-        [self, state](Napi::Env)
-        {
-          if (!state->alive.load())
-            throw ThreadSafeCallback::CancelException();
-          if (!self->mOnClosedFn.IsEmpty())
-            self->mOnClosedFn.Call({});
-        },
-        [self, state]()
-        {
-          if (state->alive.load())
-            self->doCleanup();
-        });
+    EventQueueState::scheduleCloseOnce(self, state, queue,
+                                       [self](Napi::Env)
+                                       {
+                                         if (!self->mOnClosedFn.IsEmpty())
+                                           self->mOnClosedFn.Call({});
+                                       });
   }
 
-  void checkAlreadyClosed()
+  void ensureCloseHook()
   {
+    if (!mEvents.closeHookInstalled && mChannelPtr && mEvents.queue)
+    {
+      mEvents.closeHookInstalled = true;
+      auto queue = mEvents.queue;
+      mChannelPtr->onClosed(
+          [self = this, state = mEvents.closeState, queue]()
+          {
+            if (!state->alive.load())
+              return;
+            scheduleCloseOnce(self, state, queue);
+          });
+    }
+
     if (isPermanentlyClosed())
-      scheduleCloseOnce(this, mCloseState, mEventQueue);
+      scheduleCloseOnce(this, mEvents.closeState, mEvents.queue);
   }
 
   template <typename CloseFn>
@@ -428,7 +412,7 @@ protected:
     resetFuncRef(mOnMessageFn, false);
 
     bool hasUserCloseCb = !mOnClosedFn.IsEmpty();
-    bool willEmitClose = hasUserCloseCb && mCloseState->closeDispatched.load();
+    bool willEmitClose = hasUserCloseCb && mEvents.closeState->closeDispatched.load();
 
     if (mChannelPtr)
     {
@@ -446,11 +430,16 @@ protected:
                   << std::endl;
       }
 
-      if (forceReset || wasClosed || !closedOk || mChannelPtr->isClosed())
+      if (forceReset || wasClosed || !closedOk || mChannelPtr->isClosed() || !mEvents.closeHookInstalled)
       {
+        // Guard against a background thread setting isClosed() just before calling triggerClosed():
+        // ensure onClosed + doCleanup() is scheduled exactly once before resetting mChannelPtr.
+        if (hasUserCloseCb && mCanDetectPrematureClose && (wasClosed || (closedOk && mChannelPtr->isClosed())))
+        {
+          scheduleCloseOnce(this, mEvents.closeState, mEvents.queue);
+        }
         mChannelPtr.reset();
-        willEmitClose =
-            (closedOk && !wasClosed && hasUserCloseCb) || (hasUserCloseCb && mCloseState->closeDispatched.load());
+        willEmitClose = hasUserCloseCb && mEvents.closeState->closeDispatched.load();
       }
       else
       {
@@ -466,26 +455,39 @@ protected:
 
   std::shared_ptr<ThreadSafeCallback> ensureEventQueue(Napi::Env env)
   {
-    mSelfRef.acquire(this);
-    if (!mEventQueue)
+    bool isNew = !mEvents.queue;
+    auto queue = mEvents.ensure(this, env);
+    if (isNew)
     {
-      mEventQueue = std::make_shared<ThreadSafeCallback>(env, /*unref=*/false);
-    }
-
-    if (!mCloseHookInstalled && mChannelPtr)
-    {
-      mCloseHookInstalled = true;
-      auto queue = mEventQueue;
-      mChannelPtr->onClosed(
-          [self = this, state = mCloseState, queue]()
+      queue->setMessageHandler(
+          [this, state = mEvents.closeState](Napi::Env cbEnv, uint64_t gen,
+                                             ThreadSafeCallback::message_variant_t &&message)
           {
-            if (!state->alive.load())
-              return;
-            scheduleCloseOnce(self, state, queue);
+            if (!state->alive.load() || mOnMessageGen != gen || mOnMessageFn.IsEmpty())
+              throw ThreadSafeCallback::CancelException();
+
+            if constexpr (BinaryOnlyMessages)
+            {
+              if (!std::holds_alternative<rtc::binary>(message))
+                throw ThreadSafeCallback::CancelException();
+              auto bin = std::get<rtc::binary>(std::move(message));
+              mOnMessageFn.Call({Napi::Buffer<std::byte>::Copy(cbEnv, bin.data(), bin.size())});
+            }
+            else
+            {
+              if (std::holds_alternative<std::string>(message))
+              {
+                mOnMessageFn.Call({Napi::String::New(cbEnv, std::get<std::string>(message))});
+              }
+              else
+              {
+                auto bin = std::get<rtc::binary>(std::move(message));
+                mOnMessageFn.Call({Napi::Buffer<std::byte>::Copy(cbEnv, bin.data(), bin.size())});
+              }
+            }
           });
     }
-
-    return mEventQueue;
+    return queue;
   }
 
   static void storeConstructor(Napi::Env env, Napi::Function func)
@@ -518,10 +520,7 @@ protected:
 
   AddonData *mAddonData = nullptr;
   std::shared_ptr<RtcChannel> mChannelPtr = nullptr;
-  std::shared_ptr<CloseState> mCloseState = std::make_shared<CloseState>();
-  std::shared_ptr<ThreadSafeCallback> mEventQueue = nullptr;
-  SelfRef mSelfRef;
-  bool mCloseHookInstalled = false;
+  EventQueueState mEvents;
   bool mCanDetectPrematureClose = true;
 
   Napi::FunctionReference mOnOpenFn;
@@ -557,8 +556,8 @@ private:
     auto queue = ensureEventQueue(env);
     fnRef = Napi::Persistent(info[0].As<Napi::Function>());
     uint64_t gen = ++genRef;
-    bindFn(mCloseState, std::move(queue), gen);
-    checkAlreadyClosed();
+    bindFn(mEvents.closeState, std::move(queue), gen);
+    ensureCloseHook();
   }
 };
 

@@ -59,7 +59,7 @@ export interface WebSocketServerConfiguration {
 }
 
 // Enum in d.ts is tricky
-export type LogLevel = 'Verbose' | 'Debug' | 'Info' | 'Warning' | 'Error' | 'Fatal';
+export type LogLevel = 'None' | 'Verbose' | 'Debug' | 'Info' | 'Warning' | 'Error' | 'Fatal';
 
 // SCTP Settings
 export interface SctpSettings {

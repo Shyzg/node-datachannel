@@ -42,6 +42,36 @@ export default class RTCDataChannel extends EventTarget implements globalThis.RT
     this.#label = this.#dataChannel.getLabel();
     this.#protocol = this.#dataChannel.getProtocol();
 
+    // Register onMessage before onOpen/onClosed so any buffered messages on an already-closed
+    // channel are always queued before close/cleanup runs.
+    this.#dataChannel.onMessage((message) => {
+      if (typeof message === 'string') {
+        this.dispatchEvent(new MessageEvent('message', { data: message }));
+        return;
+      }
+
+      let data: Blob | ArrayBuffer;
+
+      if (
+        message.buffer instanceof ArrayBuffer &&
+        message.byteOffset === 0 &&
+        message.byteLength === message.buffer.byteLength
+      ) {
+        data = message.buffer;
+      } else {
+        // message is view on underlying buffer, must create new
+        // ArrayBuffer that only contains message data
+        data = new ArrayBuffer(message.byteLength);
+        new Uint8Array(data, 0, message.byteLength).set(message);
+      }
+
+      if (this.#binaryType === 'blob') {
+        data = new Blob([data]);
+      }
+
+      this.dispatchEvent(new MessageEvent('message', { data }));
+    });
+
     const handleOpen = () => {
       if (this.#readyState !== 'connecting') return;
       const openId = this.#dataChannel.getId();
@@ -85,34 +115,6 @@ export default class RTCDataChannel extends EventTarget implements globalThis.RT
 
     this.#dataChannel.onBufferedAmountLow(() => {
       this.dispatchEvent(new Event('bufferedamountlow'));
-    });
-
-    this.#dataChannel.onMessage((message) => {
-      if (typeof message === 'string') {
-        this.dispatchEvent(new MessageEvent('message', { data: message }));
-        return;
-      }
-
-      let data: Blob | ArrayBuffer;
-
-      if (
-        message.buffer instanceof ArrayBuffer &&
-        message.byteOffset === 0 &&
-        message.byteLength === message.buffer.byteLength
-      ) {
-        data = message.buffer;
-      } else {
-        // message is view on underlying buffer, must create new
-        // ArrayBuffer that only contains message data
-        data = new ArrayBuffer(message.byteLength);
-        new Uint8Array(data, 0, message.byteLength).set(message);
-      }
-
-      if (this.#binaryType === 'blob') {
-        data = new Blob([data]);
-      }
-
-      this.dispatchEvent(new MessageEvent('message', { data }));
     });
 
     // forward events to properties
