@@ -11,10 +11,10 @@ describe('P2P', { timeout: 30_000 }, () => {
     const done = Promise.withResolvers<void>();
 
     const peer1 = new nodeDataChannel.PeerConnection('Peer1', {
-      iceServers: ['stun:stun.l.google.com:19302'],
+      iceServers: [],
     });
     const peer2 = new nodeDataChannel.PeerConnection('Peer2', {
-      iceServers: ['stun:stun.l.google.com:19302'],
+      iceServers: [],
     });
 
     const p1StateMock = mock.fn();
@@ -31,7 +31,12 @@ describe('P2P', { timeout: 30_000 }, () => {
     const p2DCMock = mock.fn();
     const p2DCMessageMock = mock.fn<(msg: string | Buffer) => void>();
 
-    peer1.onStateChange(p1StateMock);
+    peer1.onStateChange((state) => {
+      p1StateMock(state);
+      if (state === 'failed') {
+        done.reject(new Error('Peer1 entered failed state'));
+      }
+    });
     peer1.onGatheringStateChange(p1GatheringStateMock);
     peer1.onLocalDescription((sdp, type) => {
       p1SDPMock();
@@ -42,7 +47,12 @@ describe('P2P', { timeout: 30_000 }, () => {
       peer2.addRemoteCandidate(candidate, mid);
     });
 
-    peer2.onStateChange(p2StateMock);
+    peer2.onStateChange((state) => {
+      p2StateMock(state);
+      if (state === 'failed') {
+        done.reject(new Error('Peer2 entered failed state'));
+      }
+    });
     peer2.onGatheringStateChange(p2GatheringStateMock);
     peer2.onLocalDescription((sdp, type) => {
       p2SDPMock();
@@ -67,12 +77,15 @@ describe('P2P', { timeout: 30_000 }, () => {
     });
     dc1.onMessage((msg) => {
       p1DCMessageMock(msg);
-      peer1.close();
-      peer2.close();
       done.resolve();
     });
 
-    await done.promise;
+    try {
+      await done.promise;
+    } finally {
+      peer1.close();
+      peer2.close();
+    }
 
     assert.ok(p1StateMock.mock.calls.length >= 1);
     assert.ok(p1GatheringStateMock.mock.calls.length >= 1);

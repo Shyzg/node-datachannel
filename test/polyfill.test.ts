@@ -70,12 +70,12 @@ describe('polyfill', { timeout: 30_000 }, () => {
 
     const peer1 = new RTCPeerConnection({
       peerIdentity: 'peer1',
-      iceServers: [{ urls: ['stun:stun.l.google.com:19302'] }],
+      iceServers: [],
     });
 
     const peer2 = new RTCPeerConnection({
       peerIdentity: 'peer2',
-      iceServers: [{ urls: ['stun:stun.l.google.com:19302'] }],
+      iceServers: [],
     });
 
     let dc1: RTCDataChannel | null = null;
@@ -183,8 +183,13 @@ describe('polyfill', { timeout: 30_000 }, () => {
       }
     }
 
+    const sentAll = Promise.withResolvers<void>();
+
     peer1.onconnectionstatechange = (): void => {
       p1ConnectionStateMock();
+      if (peer1.connectionState === 'failed') {
+        sentAll.reject(new Error('Peer1 entered failed state'));
+      }
     };
     peer1.oniceconnectionstatechange = (): void => {
       p1IceConnectionStateMock();
@@ -199,6 +204,9 @@ describe('polyfill', { timeout: 30_000 }, () => {
 
     peer2.onconnectionstatechange = (): void => {
       p2ConnectionStateMock();
+      if (peer2.connectionState === 'failed') {
+        sentAll.reject(new Error('Peer2 entered failed state'));
+      }
     };
     peer2.oniceconnectionstatechange = (): void => {
       p2IceConnectionStateMock();
@@ -230,8 +238,6 @@ describe('polyfill', { timeout: 30_000 }, () => {
       peer1.setRemoteDescription(answerDesc);
     });
 
-    const sentAll = Promise.withResolvers<void>();
-
     dc1 = peer1.createDataChannel('test-p2p');
     dc1.onopen = (): void => {
       p1DCMock();
@@ -248,7 +254,12 @@ describe('polyfill', { timeout: 30_000 }, () => {
       }
     };
 
-    await sentAll.promise;
+    try {
+      await sentAll.promise;
+    } finally {
+      peer1.close();
+      peer2.close();
+    }
   });
 
   test('it can access datachannel informational fields after closing', async () => {

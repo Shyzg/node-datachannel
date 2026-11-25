@@ -45,7 +45,7 @@ describe('PeerConnection Classes', () => {
 
   test('Create PeerConnection and validate states/options', () => {
     const peer = new nodeDataChannel.PeerConnection('Peer', {
-      iceServers: ['stun:stun.l.google.com:19302'],
+      iceServers: ['stun:127.0.0.1:19302'],
     });
     assert.ok(peer);
     assert.ok(peer.onStateChange);
@@ -71,7 +71,7 @@ describe('PeerConnection Classes', () => {
 
   test('Create Data Channel', () => {
     const peer = new nodeDataChannel.PeerConnection('Peer', {
-      iceServers: ['stun:stun.l.google.com:19302'],
+      iceServers: ['stun:127.0.0.1:19302'],
     });
     const dc = peer.createDataChannel('test', { protocol: 'test-protocol' });
     assert.ok(dc);
