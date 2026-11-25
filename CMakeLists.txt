@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 
-project(node_datachannel VERSION 1.0.0)
+project(node_datachannel VERSION 1.0.1)
 
 # compile_commands.json
 # -----------------------------------
