@@ -1,0 +1,188 @@
+name: Release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Run full verification and npm publish --dry-run without publishing
+        type: boolean
+        default: true
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    name: Validate release metadata
+    runs-on: ubuntu-latest
+    outputs:
+      name: ${{ steps.check.outputs.name }}
+      version: ${{ steps.check.outputs.version }}
+      dist_tag: ${{ steps.check.outputs.dist_tag }}
+      already_published: ${{ steps.check.outputs.already_published }}
+      dry_run: ${{ steps.check.outputs.dry_run }}
+      should_run: ${{ steps.check.outputs.should_run }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: Validate version, dist-tag, and npm registry status
+        id: check
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          IS_PRERELEASE: ${{ github.event.release.prerelease }}
+          INPUT_DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          node --input-type=module <<'EOF'
+          import fs from 'node:fs';
+
+          const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+          const { name, version } = pkg;
+          if (!name || !version) {
+            throw new Error('package.json must define both "name" and "version"');
+          }
+
+          const eventName = process.env.EVENT_NAME;
+          const releaseTag = process.env.RELEASE_TAG || '';
+          const isPrerelease = process.env.IS_PRERELEASE === 'true';
+          const dryRun = eventName === 'workflow_dispatch' && process.env.INPUT_DRY_RUN !== 'false';
+
+          if (eventName === 'release') {
+            const expectedTag = `v${version}`;
+            if (releaseTag !== expectedTag) {
+              throw new Error(
+                `Release tag "${releaseTag}" does not match package.json version "${version}" (expected "${expectedTag}").`,
+              );
+            }
+          } else if (eventName === 'workflow_dispatch' && !dryRun && process.env.GITHUB_REF !== 'refs/heads/main') {
+            throw new Error(
+              `Manual publish (dry_run=false) is only allowed from refs/heads/main (got "${process.env.GITHUB_REF}").`,
+            );
+          }
+
+          const prereleaseMatch = version.match(
+            /^\d+\.\d+\.\d+-([0-9A-Za-z-]+)(?:\.[0-9A-Za-z-]+)*(?:\+[0-9A-Za-z.-]+)?$/,
+          );
+          let distTag = 'latest';
+          if (prereleaseMatch) {
+            const channel = prereleaseMatch[1];
+            distTag = /^[A-Za-z][0-9A-Za-z-]*$/.test(channel) && channel !== 'latest' ? channel : 'next';
+          } else if (isPrerelease) {
+            throw new Error(
+              `GitHub Release is marked as pre-release, but package.json version "${version}" has no prerelease suffix (e.g. "${version}-rc.1").`,
+            );
+          }
+
+          const registryUrl = `https://registry.npmjs.org/${encodeURIComponent(name)}`;
+          const response = await fetch(registryUrl, {
+            headers: { Accept: 'application/vnd.npm.install-v1+json' },
+          });
+
+          let alreadyPublished = false;
+          if (response.status === 200) {
+            const metadata = await response.json();
+            alreadyPublished = Boolean(metadata.versions && Object.hasOwn(metadata.versions, version));
+          } else if (response.status !== 404) {
+            throw new Error(`Unexpected response from npm registry (${response.status} ${response.statusText})`);
+          }
+
+          const shouldRun = dryRun || !alreadyPublished;
+
+          if (alreadyPublished && !dryRun) {
+            console.log(`::notice::${name}@${version} is already published on npm; skipping verification and publish.`);
+          } else {
+            console.log(`Release preflight passed: ${name}@${version} (dist-tag: ${distTag}, dry-run: ${dryRun})`);
+          }
+
+          const outputPath = process.env.GITHUB_OUTPUT;
+          const outputs = {
+            name,
+            version,
+            dist_tag: distTag,
+            already_published: String(alreadyPublished),
+            dry_run: String(dryRun),
+            should_run: String(shouldRun),
+          };
+          fs.appendFileSync(
+            outputPath,
+            `${Object.entries(outputs).map(([k, v]) => `${k}=${v}`).join('\n')}\n`,
+          );
+          EOF
+
+  verify:
+    name: Verify across platforms
+    needs: preflight
+    if: needs.preflight.outputs.should_run == 'true'
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
+  publish:
+    name: Publish to npm
+    needs: [preflight, verify]
+    if: needs.preflight.outputs.should_run == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Verify npm supports Trusted Publishing (OIDC)
+        run: |
+          node --input-type=module -e "
+            import { execFileSync } from 'node:child_process';
+            const version = execFileSync('npm', ['--version'], { encoding: 'utf8' }).trim();
+            const [major, minor, patch] = version.split('.').map(Number);
+            const ok = major > 11 || (major === 11 && (minor > 5 || (minor === 5 && patch >= 1)));
+            console.log('Detected npm version:', version);
+            if (!ok) {
+              console.error('npm >= 11.5.1 is required for Trusted Publishing (OIDC).');
+              process.exit(1);
+            }
+          "
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build libssl-dev
+          echo "CMAKE_GENERATOR=Ninja" >> "$GITHUB_ENV"
+
+      - name: Install dependencies and build native addon
+        run: pnpm install --frozen-lockfile
+
+      - name: Publish package to npm (dry-run)
+        if: needs.preflight.outputs.dry_run == 'true'
+        env:
+          DIST_TAG: ${{ needs.preflight.outputs.dist_tag }}
+        run: npm publish --dry-run --access public --tag "$DIST_TAG"
+
+      - name: Publish package to npm via Trusted Publishing (OIDC)
+        if: needs.preflight.outputs.dry_run != 'true'
+        env:
+          DIST_TAG: ${{ needs.preflight.outputs.dist_tag }}
+        run: npm publish --provenance --access public --tag "$DIST_TAG"
