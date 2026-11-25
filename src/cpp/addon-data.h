@@ -56,6 +56,9 @@ struct AddonData
 #endif
 
   std::shared_ptr<ThreadSafeCallback> logCallback;
+  std::shared_ptr<std::atomic<bool>> logAlive;
+  Napi::FunctionReference logFn;
+  uint64_t logGen = 0;
 
   ~AddonData();
 };

@@ -89,7 +89,10 @@ void VideoWrapper::addH264Codec(const Napi::CallbackInfo &info)
   mMediaPtr->addH264Codec(payloadType, profile);
 }
 
-void VideoWrapper::addH265Codec(const Napi::CallbackInfo &info)
+namespace
+{
+template <typename Fn>
+void addSimpleVideoCodec(const Napi::CallbackInfo &info, Fn &&fn)
 {
   Napi::Env env = info.Env();
   if (info.Length() < 1)
@@ -100,47 +103,26 @@ void VideoWrapper::addH265Codec(const Napi::CallbackInfo &info)
   int payloadType = 0;
   if (!parsePayloadType(env, info[0], "payloadType", payloadType))
     return;
-  mMediaPtr->addH265Codec(payloadType);
+  fn(payloadType);
+}
+} // namespace
+
+void VideoWrapper::addH265Codec(const Napi::CallbackInfo &info)
+{
+  addSimpleVideoCodec(info, [&](int pt) { mMediaPtr->addH265Codec(pt); });
 }
 
 void VideoWrapper::addVP8Codec(const Napi::CallbackInfo &info)
 {
-  Napi::Env env = info.Env();
-  if (info.Length() < 1)
-  {
-    Napi::TypeError::New(env, "We expect (Number) as param").ThrowAsJavaScriptException();
-    return;
-  }
-  int payloadType = 0;
-  if (!parsePayloadType(env, info[0], "payloadType", payloadType))
-    return;
-  mMediaPtr->addVP8Codec(payloadType);
+  addSimpleVideoCodec(info, [&](int pt) { mMediaPtr->addVP8Codec(pt); });
 }
 
 void VideoWrapper::addVP9Codec(const Napi::CallbackInfo &info)
 {
-  Napi::Env env = info.Env();
-  if (info.Length() < 1)
-  {
-    Napi::TypeError::New(env, "We expect (Number) as param").ThrowAsJavaScriptException();
-    return;
-  }
-  int payloadType = 0;
-  if (!parsePayloadType(env, info[0], "payloadType", payloadType))
-    return;
-  mMediaPtr->addVP9Codec(payloadType);
+  addSimpleVideoCodec(info, [&](int pt) { mMediaPtr->addVP9Codec(pt); });
 }
 
 void VideoWrapper::addAV1Codec(const Napi::CallbackInfo &info)
 {
-  Napi::Env env = info.Env();
-  if (info.Length() < 1)
-  {
-    Napi::TypeError::New(env, "We expect (Number) as param").ThrowAsJavaScriptException();
-    return;
-  }
-  int payloadType = 0;
-  if (!parsePayloadType(env, info[0], "payloadType", payloadType))
-    return;
-  mMediaPtr->addAV1Codec(payloadType);
+  addSimpleVideoCodec(info, [&](int pt) { mMediaPtr->addAV1Codec(pt); });
 }

@@ -19,7 +19,7 @@ public:
   static void cleanup(const Napi::CallbackInfo &info);
   static void setSctpSettings(const Napi::CallbackInfo &info);
   static Napi::Value getLibraryVersion(const Napi::CallbackInfo &info);
-  static void clearLogCallbackIfActive(std::shared_ptr<ThreadSafeCallback> &cb);
+  static void clearLogCallbackIfActive(AddonData *data, bool fromDestructor = false);
 
 private:
   static inline std::mutex logMutex;

@@ -229,6 +229,20 @@ inline bool parsePositiveDurationMs(Napi::Env env, Napi::Value val, const char *
   return parseBoundedInt(env, val, name, 1.0, kMaxDurationMs, "must be positive (<= 2147483647 ms)", out);
 }
 
+inline bool parseOptionalBool(Napi::Env env, const Napi::Object &obj, const char *key, bool &out)
+{
+  Napi::Value val = obj.Get(key);
+  if (val.IsUndefined())
+    return true;
+  if (!val.IsBoolean())
+  {
+    Napi::TypeError::New(env, std::string(key) + " must be a boolean").ThrowAsJavaScriptException();
+    return false;
+  }
+  out = val.As<Napi::Boolean>().Value();
+  return true;
+}
+
 inline bool parseOptionalString(Napi::Env env, const Napi::Object &obj, const char *key,
                                 std::optional<std::string> &out)
 {

@@ -31,6 +31,8 @@ private:
   std::shared_ptr<std::atomic<bool>> mAlive = std::make_shared<std::atomic<bool>>(true);
   SelfRef mSelfRef;
   std::shared_ptr<ThreadSafeCallback> mOnClientCallback = nullptr;
+  Napi::FunctionReference mOnClientFn;
+  uint64_t mOnClientGen = 0;
 };
 
 #endif // WEB_SOCKET_SERVER_WRAPPER_H

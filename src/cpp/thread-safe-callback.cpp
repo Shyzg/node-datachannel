@@ -19,29 +19,6 @@ void ThreadSafeCallback::finalizeFunc(Napi::Env, void *, ContextType *context)
   }
 }
 
-ThreadSafeCallback::ThreadSafeCallback(Napi::Function callback, bool unref)
-{
-  Napi::Env env = callback.Env();
-
-  if (!callback.IsFunction())
-    throw Napi::Error::New(env, "Callback must be a function");
-
-  auto *ctx = new ContextType(mState);
-  try
-  {
-    tsfn = tsfn_t::New(env, std::move(callback), "ThreadSafeCallback callback",
-                       0, // unlimited queue
-                       1, ctx, finalizeFunc, static_cast<void *>(nullptr));
-  }
-  catch (...)
-  {
-    delete ctx;
-    throw;
-  }
-  if (unref)
-    tsfn.Unref(env);
-}
-
 ThreadSafeCallback::ThreadSafeCallback(Napi::Env env, bool unref)
 {
   auto *ctx = new ContextType(mState);
@@ -86,27 +63,14 @@ void ThreadSafeCallback::setMessageHandler(message_handler_t handler)
   mState->messageHandler = std::move(handler);
 }
 
-void ThreadSafeCallback::call(arg_func_t argFunc, cleanup_func_t cleanupFunc)
-{
-  std::lock_guard<std::mutex> lock(mState->mutex);
-  if (mState->aborted)
-    return;
-
-  mState->pending.push_back(CallbackData{std::move(argFunc), nullptr, std::move(cleanupFunc), std::nullopt, false});
-  // NonBlockingCall never blocks with unlimited queue, keeping the lock deadlock-free
-  if (tsfn.NonBlockingCall(static_cast<std::nullptr_t *>(nullptr)) != napi_ok)
-  {
-    mState->pending.pop_back();
-  }
-}
-
 void ThreadSafeCallback::dispatch(dispatch_func_t fn, cleanup_func_t cleanupFunc, bool isClose)
 {
   std::lock_guard<std::mutex> lock(mState->mutex);
   if (mState->aborted)
     return;
 
-  mState->pending.push_back(CallbackData{nullptr, std::move(fn), std::move(cleanupFunc), std::nullopt, isClose});
+  mState->pending.push_back(CallbackData{std::move(fn), std::move(cleanupFunc), std::nullopt, isClose});
+  // NonBlockingCall never blocks with unlimited queue, keeping the lock deadlock-free
   if (tsfn.NonBlockingCall(static_cast<std::nullptr_t *>(nullptr)) != napi_ok)
   {
     mState->pending.pop_back();
@@ -119,7 +83,7 @@ void ThreadSafeCallback::dispatchMessage(uint64_t gen, message_variant_t message
   if (mState->aborted)
     return;
 
-  CallbackData item{nullptr, nullptr, nullptr, MessageItem{gen, std::move(message)}, false};
+  CallbackData item{nullptr, nullptr, MessageItem{gen, std::move(message)}, false};
   auto insertPos = mState->pending.end();
   if (insertBeforeClose)
   {
@@ -139,7 +103,7 @@ void ThreadSafeCallback::dispatchMessage(uint64_t gen, message_variant_t message
   }
 }
 
-void ThreadSafeCallback::callbackFunc(Napi::Env env, Napi::Function callback, ContextType *context, std::nullptr_t *)
+void ThreadSafeCallback::callbackFunc(Napi::Env env, Napi::Function, ContextType *context, std::nullptr_t *)
 {
   if (!context || !*context)
     return;
@@ -181,14 +145,6 @@ void ThreadSafeCallback::callbackFunc(Napi::Env env, Napi::Function callback, Co
     else if (item.dispatchFunc)
     {
       item.dispatchFunc(env);
-    }
-    else
-    {
-      arg_vector_t args;
-      if (item.argFunc)
-        item.argFunc(env, args);
-      if (callback)
-        callback.Call(args);
     }
   }
   catch (CancelException &)

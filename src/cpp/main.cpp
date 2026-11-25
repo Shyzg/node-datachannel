@@ -52,7 +52,7 @@ AddonData::~AddonData()
     inst->doStop(/*fromDestructor=*/true);
 #endif
 
-  RtcWrapper::clearLogCallbackIfActive(logCallback);
+  RtcWrapper::clearLogCallbackIfActive(this, /*fromDestructor=*/true);
 }
 
 Napi::Object InitAll(Napi::Env env, Napi::Object exports)

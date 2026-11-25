@@ -29,12 +29,13 @@ public:
   Napi::Value port(const Napi::CallbackInfo &info);
   Napi::Value address(const Napi::CallbackInfo &info);
 
-  std::shared_ptr<ThreadSafeCallback> mOnUnhandledStunRequestCallback = nullptr;
-
 private:
   AddonData *mAddonData = nullptr;
   std::shared_ptr<std::atomic<bool>> mAlive = std::make_shared<std::atomic<bool>>(true);
   SelfRef mSelfRef;
+  std::shared_ptr<ThreadSafeCallback> mOnUnhandledStunRequestCallback = nullptr;
+  Napi::FunctionReference mOnUnhandledStunRequestFn;
+  uint64_t mOnUnhandledStunRequestGen = 0;
   std::optional<std::string> mAddress;
   uint16_t mPort = 0;
   std::unique_ptr<rtc::IceUdpMuxListener> iceUdpMuxListenerPtr = nullptr;

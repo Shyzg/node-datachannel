@@ -104,3 +104,24 @@ jobs:
       - name: Verify npm package tarball
         if: runner.os == 'Linux'
         run: npm pack --dry-run
+
+      - name: Verify minimal build (NO_MEDIA=1, NO_WEBSOCKET=1)
+        if: runner.os == 'Linux'
+        run: |
+          pnpm exec cmake-js configure --CDNO_MEDIA=1 --CDNO_WEBSOCKET=1
+          pnpm exec cmake-js build
+          node -e "
+            import('./dist/lib/index.js').then((m) => {
+              if (m.Video !== undefined || m.Audio !== undefined || m.Track !== undefined || m.WebSocket !== undefined) {
+                throw new Error('Expected media and WebSocket exports to be undefined in minimal build');
+              }
+              let wsThrew = false;
+              try { new m.WebSocketServer(); } catch (err) { wsThrew = /WebSocket support is disabled/.test(err.message); }
+              if (!wsThrew) throw new Error('Expected WebSocketServer to throw when WebSocket support is disabled');
+              const pc = new m.PeerConnection('MinimalPeer', { iceServers: [] });
+              const dc = pc.createDataChannel('dc');
+              dc.close();
+              pc.close();
+              m.cleanup();
+            });
+          "

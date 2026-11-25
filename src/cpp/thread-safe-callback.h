@@ -13,19 +13,15 @@
 #include <optional>
 #include <string>
 #include <variant>
-#include <vector>
 
 class ThreadSafeCallback
 {
 public:
-  using arg_vector_t = std::vector<napi_value>;
-  using arg_func_t = std::function<void(napi_env, arg_vector_t &)>;
   using dispatch_func_t = std::function<void(Napi::Env)>;
   using cleanup_func_t = std::function<void()>;
   using message_variant_t = std::variant<rtc::binary, std::string>;
   using message_handler_t = std::function<void(Napi::Env, uint64_t, message_variant_t &&)>;
 
-  ThreadSafeCallback(Napi::Function callback, bool unref = false);
   explicit ThreadSafeCallback(Napi::Env env, bool unref = true);
   ~ThreadSafeCallback();
 
@@ -37,8 +33,6 @@ public:
 
   void setMessageHandler(message_handler_t handler);
 
-  void call(
-      arg_func_t argFunc, cleanup_func_t cleanupFunc = []() {});
   void dispatch(
       dispatch_func_t fn, cleanup_func_t cleanupFunc = []() {}, bool isClose = false);
   void dispatchMessage(uint64_t gen, message_variant_t message, bool insertBeforeClose = false);
@@ -57,7 +51,6 @@ private:
   };
   struct CallbackData
   {
-    arg_func_t argFunc;
     dispatch_func_t dispatchFunc;
     cleanup_func_t cleanupFunc;
     std::optional<MessageItem> messageItem;

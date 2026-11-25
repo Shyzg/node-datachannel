@@ -49,12 +49,15 @@ export default class RTCIceTransport extends EventTarget implements globalThis.R
   getLocalParameters(): RTCIceParameters | null {
     const cp = this.#pc?.selectedCandidatePair();
     if (!cp?.local) return null;
-    return new RTCIceParameters(
-      new RTCIceCandidate({
-        candidate: cp.local.candidate,
-        sdpMLineIndex: 0,
-      }),
-    );
+    const { ufrag, pwd } = parseIceParametersFromSdp(this.#pc.localDescription?.sdp);
+    const candidate = new RTCIceCandidate({
+      candidate: cp.local.candidate,
+      sdpMLineIndex: 0,
+    });
+    return new RTCIceParameters({
+      usernameFragment: ufrag || candidate.usernameFragment,
+      password: pwd,
+    });
   }
 
   getRemoteCandidates(): globalThis.RTCIceCandidate[] {
@@ -64,12 +67,15 @@ export default class RTCIceTransport extends EventTarget implements globalThis.R
   getRemoteParameters(): RTCIceParameters | null {
     const cp = this.#pc?.selectedCandidatePair();
     if (!cp?.remote) return null;
-    return new RTCIceParameters(
-      new RTCIceCandidate({
-        candidate: cp.remote.candidate,
-        sdpMLineIndex: 0,
-      }),
-    );
+    const { ufrag, pwd } = parseIceParametersFromSdp(this.#pc.remoteDescription?.sdp);
+    const candidate = new RTCIceCandidate({
+      candidate: cp.remote.candidate,
+      sdpMLineIndex: 0,
+    });
+    return new RTCIceParameters({
+      usernameFragment: ufrag || candidate.usernameFragment,
+      password: pwd,
+    });
   }
 
   getSelectedCandidatePair(): globalThis.RTCIceCandidatePair | null {
@@ -86,6 +92,13 @@ export default class RTCIceTransport extends EventTarget implements globalThis.R
       }),
     };
   }
+}
+
+function parseIceParametersFromSdp(sdp?: string | null): { ufrag: string; pwd: string } {
+  if (!sdp) return { ufrag: '', pwd: '' };
+  const ufrag = sdp.match(/^a=ice-ufrag:([^\r\n]+)/m)?.[1] ?? '';
+  const pwd = sdp.match(/^a=ice-pwd:([^\r\n]+)/m)?.[1] ?? '';
+  return { ufrag, pwd };
 }
 
 export class RTCIceParameters {

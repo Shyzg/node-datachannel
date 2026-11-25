@@ -66,7 +66,9 @@ IceUdpMuxListenerWrapper::~IceUdpMuxListenerWrapper() { doCleanup(/*fromDestruct
 void IceUdpMuxListenerWrapper::doCleanup(bool fromDestructor)
 {
   mAlive->store(false);
+  ++mOnUnhandledStunRequestGen;
   resetCallback(mOnUnhandledStunRequestCallback);
+  resetFuncRef(mOnUnhandledStunRequestFn, fromDestructor);
 
   if (iceUdpMuxListenerPtr)
   {
@@ -121,25 +123,29 @@ void IceUdpMuxListenerWrapper::onUnhandledStunRequest(const Napi::CallbackInfo &
   }
 
   mSelfRef.acquire(this);
-  auto cb = std::make_shared<ThreadSafeCallback>(info[0].As<Napi::Function>());
-  resetCallback(mOnUnhandledStunRequestCallback);
-  mOnUnhandledStunRequestCallback = cb;
+  if (!mOnUnhandledStunRequestCallback)
+    mOnUnhandledStunRequestCallback = std::make_shared<ThreadSafeCallback>(env, /*unref=*/false);
+  auto cb = mOnUnhandledStunRequestCallback;
+  mOnUnhandledStunRequestFn = Napi::Persistent(info[0].As<Napi::Function>());
+  uint64_t gen = ++mOnUnhandledStunRequestGen;
 
   iceUdpMuxListenerPtr->OnUnhandledStunRequest(
-      [alive = mAlive, cb = std::move(cb)](rtc::IceUdpMuxRequest request)
+      [this, alive = mAlive, cb = std::move(cb), gen](rtc::IceUdpMuxRequest request)
       {
-        cb->call(
-            [alive, request = std::move(request)](Napi::Env env, std::vector<napi_value> &args)
+        if (!alive->load())
+          return;
+        cb->dispatch(
+            [this, alive, gen, request = std::move(request)](Napi::Env cbEnv)
             {
-              if (!alive->load())
+              if (!alive->load() || mOnUnhandledStunRequestGen != gen || mOnUnhandledStunRequestFn.IsEmpty())
                 throw ThreadSafeCallback::CancelException();
 
-              Napi::Object reqObj = Napi::Object::New(env);
+              Napi::Object reqObj = Napi::Object::New(cbEnv);
               reqObj.Set("ufrag", request.remoteUfrag.c_str());
               reqObj.Set("localUfrag", request.localUfrag.c_str());
               reqObj.Set("host", request.remoteAddress.c_str());
               reqObj.Set("port", request.remotePort);
-              args = {reqObj};
+              mOnUnhandledStunRequestFn.Call({reqObj});
             });
       });
 }

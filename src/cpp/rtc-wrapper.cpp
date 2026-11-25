@@ -45,18 +45,24 @@ void RtcWrapper::preload(const Napi::CallbackInfo &info)
   }
 }
 
-void RtcWrapper::clearLogCallbackIfActive(std::shared_ptr<ThreadSafeCallback> &cb)
+void RtcWrapper::clearLogCallbackIfActive(AddonData *data, bool fromDestructor)
 {
-  if (!cb)
+  if (!data)
     return;
-  std::lock_guard<std::mutex> lock(logMutex);
-  if (activeLogCallback.lock() == cb)
+  if (data->logAlive)
+    data->logAlive->store(false);
+  ++data->logGen;
+  if (data->logCallback)
   {
-    rtc::InitLogger(rtc::LogLevel::None, nullptr);
-    activeLogCallback.reset();
+    std::lock_guard<std::mutex> lock(logMutex);
+    if (activeLogCallback.lock() == data->logCallback)
+    {
+      rtc::InitLogger(rtc::LogLevel::None, nullptr);
+      activeLogCallback.reset();
+    }
+    resetCallback(data->logCallback);
   }
-  cb->cancel();
-  cb.reset();
+  resetFuncRef(data->logFn, fromDestructor);
 }
 
 void RtcWrapper::initLogger(const Napi::CallbackInfo &info)
@@ -102,7 +108,11 @@ void RtcWrapper::initLogger(const Napi::CallbackInfo &info)
     if (length < 2 || info[1].IsUndefined())
     {
       std::lock_guard<std::mutex> lock(logMutex);
+      if (data->logAlive)
+        data->logAlive->store(false);
+      ++data->logGen;
       resetCallback(data->logCallback);
+      resetFuncRef(data->logFn, false);
       activeLogCallback.reset();
       rtc::InitLogger(logLevel, nullptr);
     }
@@ -113,44 +123,57 @@ void RtcWrapper::initLogger(const Napi::CallbackInfo &info)
         Napi::TypeError::New(env, "Function expected").ThrowAsJavaScriptException();
         return;
       }
-      auto cb = std::make_shared<ThreadSafeCallback>(info[1].As<Napi::Function>(), /*unref=*/true);
+      auto cb = std::make_shared<ThreadSafeCallback>(env, /*unref=*/true);
+      auto alive = std::make_shared<std::atomic<bool>>(true);
+      Napi::FunctionReference fnRef = Napi::Persistent(info[1].As<Napi::Function>());
       std::lock_guard<std::mutex> lock(logMutex);
+      if (data->logAlive)
+        data->logAlive->store(false);
       resetCallback(data->logCallback);
+      resetFuncRef(data->logFn, false);
       data->logCallback = cb;
+      data->logAlive = alive;
+      data->logFn = std::move(fnRef);
+      uint64_t gen = ++data->logGen;
       activeLogCallback = cb;
       rtc::InitLogger(logLevel,
-                      [cb = std::move(cb)](rtc::LogLevel level, std::string message)
+                      [data, alive, cb = std::move(cb), gen](rtc::LogLevel level, std::string message)
                       {
-        cb->call(
-            [level, message = std::move(message)](Napi::Env env, std::vector<napi_value> &args)
-            {
-          const char *logLevelName = "";
-          switch (level)
-          {
-          case rtc::LogLevel::Verbose:
-            logLevelName = "Verbose";
-            break;
-          case rtc::LogLevel::Debug:
-            logLevelName = "Debug";
-            break;
-          case rtc::LogLevel::Info:
-            logLevelName = "Info";
-            break;
-          case rtc::LogLevel::Warning:
-            logLevelName = "Warning";
-            break;
-          case rtc::LogLevel::Error:
-            logLevelName = "Error";
-            break;
-          case rtc::LogLevel::Fatal:
-            logLevelName = "Fatal";
-            break;
-          default:
-            break;
-          }
-          args = {Napi::String::New(env, logLevelName), Napi::String::New(env, message)};
-        });
-      });
+                        if (!alive->load())
+                          return;
+                        cb->dispatch(
+                            [data, alive, gen, level, message = std::move(message)](Napi::Env cbEnv)
+                            {
+                              if (!alive->load() || data->logGen != gen || data->logFn.IsEmpty())
+                                throw ThreadSafeCallback::CancelException();
+                              const char *logLevelName = "";
+                              switch (level)
+                              {
+                              case rtc::LogLevel::Verbose:
+                                logLevelName = "Verbose";
+                                break;
+                              case rtc::LogLevel::Debug:
+                                logLevelName = "Debug";
+                                break;
+                              case rtc::LogLevel::Info:
+                                logLevelName = "Info";
+                                break;
+                              case rtc::LogLevel::Warning:
+                                logLevelName = "Warning";
+                                break;
+                              case rtc::LogLevel::Error:
+                                logLevelName = "Error";
+                                break;
+                              case rtc::LogLevel::Fatal:
+                                logLevelName = "Fatal";
+                                break;
+                              default:
+                                break;
+                              }
+                              data->logFn.Call(
+                                  {Napi::String::New(cbEnv, logLevelName), Napi::String::New(cbEnv, message)});
+                            });
+                      });
     }
   }
   catch (std::exception &ex)
@@ -193,7 +216,7 @@ void RtcWrapper::cleanup(const Napi::CallbackInfo &info)
     WebSocketWrapper::CleanupAll(data);
 #endif
 
-    clearLogCallbackIfActive(data->logCallback);
+    clearLogCallbackIfActive(data);
 
     // Only run process-global rtc::Cleanup() when no other Node workers still hold active instances.
     // Unique lock blocks concurrent constructors until cleanup finishes, preventing a race where

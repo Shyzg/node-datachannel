@@ -10,6 +10,7 @@ import {
   RTCIceCandidate,
   RTCPeerConnection,
   RTCPeerConnectionIceEvent,
+  RTCSessionDescription,
 } from '../src/polyfill/index.ts';
 import { eventPromise } from './fixtures/event-promise.ts';
 
@@ -709,5 +710,98 @@ describe('polyfill', { timeout: 30_000 }, () => {
     });
     assert.equal(errEvt.bubbles, true);
     assert.equal(errEvt.cancelable, true);
+  });
+
+  test('flushes queued Blob sends before close, parses ICE ufrag/pwd from SDP, clones getConfiguration, and validates RTCSessionDescription', async () => {
+    // RTCSessionDescription validates type at construction time
+    assert.throws(
+      () => new RTCSessionDescription({ type: 'bogus' as RTCSdpType, sdp: '' }),
+      TypeError,
+    );
+    assert.throws(
+      () => new RTCSessionDescription({} as globalThis.RTCSessionDescriptionInit),
+      TypeError,
+    );
+    const validDesc = new RTCSessionDescription({ type: 'offer', sdp: 'v=0\r\n' });
+    assert.equal(validDesc.type, 'offer');
+
+    // getConfiguration() returns a defensive copy without exposing internal mutable state
+    const cfgPc = new RTCPeerConnection({
+      iceServers: [{ urls: ['stun:stun.example.com:3478'] }],
+    });
+    try {
+      const cfg1 = cfgPc.getConfiguration();
+      cfg1.iceServers?.push({ urls: ['stun:evil.example.com:3478'] });
+      if (Array.isArray(cfg1.iceServers?.[0]?.urls)) {
+        cfg1.iceServers[0].urls.push('stun:mutated.example.com:3478');
+      }
+      const cfg2 = cfgPc.getConfiguration();
+      assert.equal(cfg2.iceServers?.length, 1);
+      assert.deepEqual(cfg2.iceServers?.[0]?.urls, ['stun:stun.example.com:3478']);
+    } finally {
+      cfgPc.close();
+    }
+
+    // getConfiguration() also succeeds when wrapping an existing native PeerConnection
+    const wrappedPc = new RTCPeerConnection({
+      peerConnection: new PeerConnection('WrappedConfigPeer', { iceServers: [] }),
+    });
+    try {
+      assert.doesNotThrow(() => wrappedPc.getConfiguration());
+    } finally {
+      wrappedPc.close();
+    }
+
+    // Live P2P connection for RTCIceTransport SDP parameters and Blob+close flush ordering
+    const pc1 = new RTCPeerConnection({ iceServers: [] });
+    const pc2 = new RTCPeerConnection({ iceServers: [] });
+    try {
+      pc1.onicecandidate = (e) => pc2.addIceCandidate(e.candidate);
+      pc2.onicecandidate = (e) => pc1.addIceCandidate(e.candidate);
+
+      const received: string[] = [];
+      const remoteClosed = Promise.withResolvers<void>();
+      pc2.ondatachannel = (ev) => {
+        const ch = ev.channel;
+        ch.onmessage = (m) => {
+          const text =
+            typeof m.data === 'string' ? m.data : new TextDecoder().decode(m.data as ArrayBuffer);
+          received.push(text);
+        };
+        ch.onclose = () => remoteClosed.resolve();
+      };
+
+      const dc1 = pc1.createDataChannel('blob-close');
+      const offer = await pc1.createOffer();
+      await pc2.setRemoteDescription(offer);
+      const answer = await pc2.createAnswer();
+      await pc1.setRemoteDescription(answer);
+      await eventPromise(dc1, 'open');
+
+      // Verify getLocalParameters() and getRemoteParameters() extract ufrag and pwd from SDP
+      const expectedLocalUfrag = pc1.localDescription?.sdp.match(/^a=ice-ufrag:([^\r\n]+)/m)?.[1];
+      const expectedLocalPwd = pc1.localDescription?.sdp.match(/^a=ice-pwd:([^\r\n]+)/m)?.[1];
+      const expectedRemoteUfrag = pc1.remoteDescription?.sdp.match(/^a=ice-ufrag:([^\r\n]+)/m)?.[1];
+      const expectedRemotePwd = pc1.remoteDescription?.sdp.match(/^a=ice-pwd:([^\r\n]+)/m)?.[1];
+      assert.ok(expectedLocalUfrag && expectedLocalPwd);
+      assert.ok(expectedRemoteUfrag && expectedRemotePwd);
+
+      const localParams = pc1.sctp.transport.iceTransport.getLocalParameters();
+      const remoteParams = pc1.sctp.transport.iceTransport.getRemoteParameters();
+      assert.equal(localParams?.usernameFragment, expectedLocalUfrag);
+      assert.equal(localParams?.password, expectedLocalPwd);
+      assert.equal(remoteParams?.usernameFragment, expectedRemoteUfrag);
+      assert.equal(remoteParams?.password, expectedRemotePwd);
+
+      // Verify Blob + string queued before immediate close() are both delivered in order
+      dc1.send(new Blob(['blob-before-close']));
+      dc1.send('string-before-close');
+      dc1.close();
+      await remoteClosed.promise;
+      assert.deepEqual(received, ['blob-before-close', 'string-before-close']);
+    } finally {
+      pc1.close();
+      pc2.close();
+    }
   });
 });

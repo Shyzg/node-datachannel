@@ -245,7 +245,7 @@ export default class RTCDataChannel extends EventTarget implements globalThis.RT
       const bytesPromise = data.arrayBuffer();
       this.#enqueueAsyncSend(async () => {
         const ab = await bytesPromise;
-        if (this.#readyState !== 'open') return;
+        if (this.#readyState === 'closed' || !this.#dataChannel.isOpen()) return;
         this.#sendBinaryNow(new Uint8Array(ab));
       });
       return;
@@ -255,7 +255,7 @@ export default class RTCDataChannel extends EventTarget implements globalThis.RT
     if (this.#sendQueue) {
       if (typeof data === 'string') {
         this.#enqueueAsyncSend(() => {
-          if (this.#readyState !== 'open') return;
+          if (this.#readyState === 'closed' || !this.#dataChannel.isOpen()) return;
           this.#dataChannel.sendMessage(data);
         });
       } else {
@@ -265,7 +265,7 @@ export default class RTCDataChannel extends EventTarget implements globalThis.RT
         const copy = new Uint8Array(view.byteLength);
         copy.set(view);
         this.#enqueueAsyncSend(() => {
-          if (this.#readyState !== 'open') return;
+          if (this.#readyState === 'closed' || !this.#dataChannel.isOpen()) return;
           this.#sendBinaryNow(copy);
         });
       }
@@ -287,8 +287,15 @@ export default class RTCDataChannel extends EventTarget implements globalThis.RT
     if (this.#readyState === 'closed' || this.#readyState === 'closing') return;
     this.#closeRequested = true;
     this.#readyState = 'closing';
-    setImmediate(() => {
-      this.#dataChannel.close();
-    });
+    const closeNative = () => {
+      setImmediate(() => {
+        this.#dataChannel.close();
+      });
+    };
+    if (this.#sendQueue) {
+      this.#sendQueue.finally(closeNative);
+    } else {
+      closeNative();
+    }
   }
 }
