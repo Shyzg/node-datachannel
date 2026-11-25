@@ -6,7 +6,7 @@ Node.js native N-API bindings for [libdatachannel](https://github.com/paullouisa
 
 - **WebRTC DataChannels** — `PeerConnection`, `DataChannel`, `DataChannelStream` (Node.js `Duplex` stream with backpressure), and `IceUdpMuxListener`.
 - **Media Tracks & RTP/RTCP** — `Audio`, `Video`, `Track`, `RtpPacketizationConfig`, `RtpPacketizer`, `H264RtpPacketizer`, `H265RtpPacketizer`, `AV1RtpPacketizer`, `RtcpSrReporter`, `RtcpNackResponder`, `RtcpReceivingSession`, and `PacingHandler`.
-- **WebSockets** — native `WebSocket` client and `WebSocketServer` with TLS (`wss://`) support.
+- **WebSockets** — native `WebSocket` client and `WebSocketServer` with TLS (`wss://`) support (note: upstream `libdatachannel` does not support root-CA verification on Windows, so Windows `wss://` clients require `disableTlsVerification: true`).
 - **WebRTC Polyfill** — `@shyzg/node-datachannel/polyfill` exposing `RTCPeerConnection`, `RTCDataChannel`, `RTCSessionDescription`, `RTCIceCandidate`, `RTCCertificate`, `RTCSctpTransport`, `RTCDtlsTransport`, `RTCIceTransport`, and WebRTC event classes.
 - **Native ESM + CJS compatibility** — ships clean ES modules with TypeScript declarations (`.d.ts`) and works with both `import` and `require()` on Node.js 24+.
 
@@ -90,7 +90,7 @@ Wrap any `DataChannel` in a Node.js `Duplex` stream:
 ```ts
 import { DataChannelStream } from '@shyzg/node-datachannel';
 
-const stream = new DataChannelStream(dc, { textMode: false });
+const stream = new DataChannelStream(dc);
 stream.on('data', (chunk) => console.log('received bytes:', chunk.length));
 stream.write(Buffer.from('hello world'));
 ```

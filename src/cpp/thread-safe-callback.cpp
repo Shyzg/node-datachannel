@@ -10,10 +10,12 @@ void ThreadSafeCallback::finalizeFunc(Napi::Env, void *, ContextType *context)
   if (!owned || !*owned)
     return;
   std::deque<CallbackData> toDrop;
+  message_handler_t handlerToDrop;
   {
     std::lock_guard<std::mutex> lock((*owned)->mutex);
     (*owned)->aborted = true;
     toDrop.swap((*owned)->pending);
+    handlerToDrop.swap((*owned)->messageHandler);
   }
 }
 
@@ -65,9 +67,11 @@ void ThreadSafeCallback::cancel()
   // Destroy queued payloads outside the mutex so captured native handles (e.g. rtc::WebSocket)
   // are released synchronously before rtc::Cleanup() waits on them, without risking lock re-entry.
   std::deque<CallbackData> toDrop;
+  message_handler_t handlerToDrop;
   {
     std::lock_guard<std::mutex> lock(mState->mutex);
     toDrop.swap(mState->pending);
+    handlerToDrop.swap(mState->messageHandler);
     if (!mState->aborted)
     {
       mState->aborted = true;
@@ -76,13 +80,19 @@ void ThreadSafeCallback::cancel()
   }
 }
 
+void ThreadSafeCallback::setMessageHandler(message_handler_t handler)
+{
+  std::lock_guard<std::mutex> lock(mState->mutex);
+  mState->messageHandler = std::move(handler);
+}
+
 void ThreadSafeCallback::call(arg_func_t argFunc, cleanup_func_t cleanupFunc)
 {
   std::lock_guard<std::mutex> lock(mState->mutex);
   if (mState->aborted)
     return;
 
-  mState->pending.push_back(CallbackData{std::move(argFunc), nullptr, std::move(cleanupFunc)});
+  mState->pending.push_back(CallbackData{std::move(argFunc), nullptr, std::move(cleanupFunc), std::nullopt, false});
   // NonBlockingCall never blocks with unlimited queue, keeping the lock deadlock-free
   if (tsfn.NonBlockingCall(static_cast<std::nullptr_t *>(nullptr)) != napi_ok)
   {
@@ -90,16 +100,42 @@ void ThreadSafeCallback::call(arg_func_t argFunc, cleanup_func_t cleanupFunc)
   }
 }
 
-void ThreadSafeCallback::dispatch(dispatch_func_t fn, cleanup_func_t cleanupFunc)
+void ThreadSafeCallback::dispatch(dispatch_func_t fn, cleanup_func_t cleanupFunc, bool isClose)
 {
   std::lock_guard<std::mutex> lock(mState->mutex);
   if (mState->aborted)
     return;
 
-  mState->pending.push_back(CallbackData{nullptr, std::move(fn), std::move(cleanupFunc)});
+  mState->pending.push_back(CallbackData{nullptr, std::move(fn), std::move(cleanupFunc), std::nullopt, isClose});
   if (tsfn.NonBlockingCall(static_cast<std::nullptr_t *>(nullptr)) != napi_ok)
   {
     mState->pending.pop_back();
+  }
+}
+
+void ThreadSafeCallback::dispatchMessage(uint64_t gen, message_variant_t message, bool insertBeforeClose)
+{
+  std::lock_guard<std::mutex> lock(mState->mutex);
+  if (mState->aborted)
+    return;
+
+  CallbackData item{nullptr, nullptr, nullptr, MessageItem{gen, std::move(message)}, false};
+  auto insertPos = mState->pending.end();
+  if (insertBeforeClose)
+  {
+    for (auto it = mState->pending.begin(); it != mState->pending.end(); ++it)
+    {
+      if (it->isClose)
+      {
+        insertPos = it;
+        break;
+      }
+    }
+  }
+  auto inserted = mState->pending.insert(insertPos, std::move(item));
+  if (tsfn.NonBlockingCall(static_cast<std::nullptr_t *>(nullptr)) != napi_ok)
+  {
+    mState->pending.erase(inserted);
   }
 }
 
@@ -109,12 +145,15 @@ void ThreadSafeCallback::callbackFunc(Napi::Env env, Napi::Function callback, Co
     return;
 
   CallbackData item;
+  message_handler_t msgHandler;
   {
     std::lock_guard<std::mutex> lock((*context)->mutex);
     if ((*context)->pending.empty())
       return;
     item = std::move((*context)->pending.front());
     (*context)->pending.pop_front();
+    if (item.messageItem.has_value())
+      msgHandler = (*context)->messageHandler;
   }
 
   // if env is gone, it could mean this cb was destroyed. See issue#176
@@ -134,7 +173,12 @@ void ThreadSafeCallback::callbackFunc(Napi::Env env, Napi::Function callback, Co
   napi_value pendingError = nullptr;
   try
   {
-    if (item.dispatchFunc)
+    if (item.messageItem.has_value())
+    {
+      if (msgHandler)
+        msgHandler(env, item.messageItem->gen, std::move(item.messageItem->message));
+    }
+    else if (item.dispatchFunc)
     {
       item.dispatchFunc(env);
     }

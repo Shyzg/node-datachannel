@@ -18,6 +18,9 @@ public:
   void forceClose(const Napi::CallbackInfo &info);
   Napi::Value remoteAddress(const Napi::CallbackInfo &info);
   Napi::Value path(const Napi::CallbackInfo &info);
+
+private:
+  bool mDisableTlsVerification = false;
 };
 
 #endif // WEB_SOCKET_WRAPPER_H

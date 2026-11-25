@@ -2,15 +2,20 @@
 #define WRAPPER_UTILS_H
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <optional>
+#include <shared_mutex>
 #include <string>
 
 #include <napi.h>
 #include <rtc/rtc.hpp>
+
+#include "addon-data.h"
+#include "thread-safe-callback.h"
 
 // Unique 128-bit N-API v8 type tags to prevent prototype-swap type confusion on ObjectWrap::Unwrap
 inline constexpr napi_type_tag kVideoTypeTag = {0x9b6d8e4a1f024a11ULL, 0xa1e5c309b4410001ULL};
@@ -26,6 +31,43 @@ inline constexpr napi_type_tag kRtcpReceivingSessionTypeTag = {0x9b6d8e4a1f024a1
 inline constexpr napi_type_tag kRtcpSrReporterTypeTag = {0x9b6d8e4a1f024a11ULL, 0xa1e5c309b441000bULL};
 
 inline constexpr double kMaxSafeInt = 9007199254740991.0; // 2^53 - 1
+inline constexpr double kMaxDurationMs = static_cast<double>(std::numeric_limits<int32_t>::max());
+
+struct CloseState
+{
+  std::atomic<bool> alive{true};
+  std::atomic<bool> closeDispatched{false};
+};
+
+// Holds shared lock on gLifecycleMutex and increments gActiveNativeInstances BEFORE constructing
+// an rtc::* object so a concurrent worker's cleanup() cannot observe 0 and deadlock in rtc::Cleanup().
+class ActiveInstanceGuard
+{
+public:
+  ActiveInstanceGuard() : mLock(gLifecycleMutex) { ++gActiveNativeInstances; }
+  ~ActiveInstanceGuard()
+  {
+    if (!mCommitted)
+      --gActiveNativeInstances;
+  }
+
+  ActiveInstanceGuard(const ActiveInstanceGuard &) = delete;
+  ActiveInstanceGuard &operator=(const ActiveInstanceGuard &) = delete;
+
+  template <typename T>
+  void commit(AddonData *&outAddonData, Napi::Env env, std::unordered_set<T *> AddonData::*setMember, T *inst)
+  {
+    outAddonData = getAddonData(env);
+    if (outAddonData && (outAddonData->*setMember).insert(inst).second)
+    {
+      mCommitted = true;
+    }
+  }
+
+private:
+  std::shared_lock<std::shared_mutex> mLock;
+  bool mCommitted = false;
+};
 
 template <typename T>
 inline T *unwrapChecked(const Napi::Object &obj, const napi_type_tag *tag)
@@ -72,6 +114,53 @@ struct SelfRef
   }
 };
 
+struct EventQueueState
+{
+  std::shared_ptr<CloseState> closeState = std::make_shared<CloseState>();
+  std::shared_ptr<ThreadSafeCallback> queue = nullptr;
+  SelfRef selfRef;
+  bool closeHookInstalled = false;
+
+  template <typename Wrap>
+  std::shared_ptr<ThreadSafeCallback> ensure(Wrap *self, Napi::Env env)
+  {
+    selfRef.acquire(self);
+    if (!queue)
+      queue = std::make_shared<ThreadSafeCallback>(env, /*unref=*/false);
+    return queue;
+  }
+
+  template <typename Wrap, typename EmitCloseFn>
+  static void scheduleCloseOnce(Wrap *self, const std::shared_ptr<CloseState> &state,
+                                const std::shared_ptr<ThreadSafeCallback> &q, EmitCloseFn &&emitClose)
+  {
+    if (!q || state->closeDispatched.exchange(true))
+      return;
+
+    q->dispatch(
+        [self, state, emitClose = std::forward<EmitCloseFn>(emitClose)](Napi::Env env)
+        {
+          if (!state->alive.load())
+            throw ThreadSafeCallback::CancelException();
+          emitClose(env);
+        },
+        [self, state]()
+        {
+          if (state->alive.load())
+            self->doCleanup();
+        },
+        /*isClose=*/true);
+  }
+
+  template <typename Wrap>
+  void cleanup(Wrap *self, bool fromDestructor)
+  {
+    closeState->alive.store(false);
+    resetCallback(queue);
+    selfRef.release(self, fromDestructor);
+  }
+};
+
 template <typename IntType>
 inline bool parseBoundedInt(Napi::Env env, Napi::Value val, const char *name, double minVal, double maxVal,
                             const char *rangeMsg, IntType &out)
@@ -96,14 +185,14 @@ inline bool parseUint8(Napi::Env env, Napi::Value val, const char *name, uint8_t
   return parseBoundedInt(env, val, name, 0.0, 255.0, "must be between 0 and 255", out);
 }
 
+inline bool parsePayloadType(Napi::Env env, Napi::Value val, const char *name, int &out)
+{
+  return parseBoundedInt(env, val, name, 0.0, 127.0, "must be between 0 and 127", out);
+}
+
 inline bool parseUint16(Napi::Env env, Napi::Value val, const char *name, uint16_t &out)
 {
   return parseBoundedInt(env, val, name, 0.0, 65535.0, "must be between 0 and 65535", out);
-}
-
-inline bool parseUint16Port(Napi::Env env, Napi::Value val, const char *name, uint16_t &out)
-{
-  return parseUint16(env, val, name, out);
 }
 
 inline bool parseNonNegativeUint32(Napi::Env env, Napi::Value val, const char *name, uint32_t &out)
@@ -130,14 +219,29 @@ inline bool parsePositiveSize(Napi::Env env, Napi::Value val, const char *name, 
   return parseBoundedInt(env, val, name, 1.0, maxSize, "must be positive", out);
 }
 
-inline bool parseNonNegativeInt64(Napi::Env env, Napi::Value val, const char *name, int64_t &out)
+inline bool parseNonNegativeDurationMs(Napi::Env env, Napi::Value val, const char *name, int64_t &out)
 {
-  return parseBoundedInt(env, val, name, 0.0, kMaxSafeInt, "must be non-negative", out);
+  return parseBoundedInt(env, val, name, 0.0, kMaxDurationMs, "must be between 0 and 2147483647 ms", out);
 }
 
-inline bool parsePositiveInt64(Napi::Env env, Napi::Value val, const char *name, int64_t &out)
+inline bool parsePositiveDurationMs(Napi::Env env, Napi::Value val, const char *name, int64_t &out)
 {
-  return parseBoundedInt(env, val, name, 1.0, kMaxSafeInt, "must be positive", out);
+  return parseBoundedInt(env, val, name, 1.0, kMaxDurationMs, "must be positive (<= 2147483647 ms)", out);
+}
+
+inline bool parseOptionalString(Napi::Env env, const Napi::Object &obj, const char *key,
+                                std::optional<std::string> &out)
+{
+  Napi::Value val = obj.Get(key);
+  if (val.IsUndefined())
+    return true;
+  if (!val.IsString())
+  {
+    Napi::TypeError::New(env, std::string(key) + " must be a string").ThrowAsJavaScriptException();
+    return false;
+  }
+  out = val.As<Napi::String>().Utf8Value();
+  return true;
 }
 
 inline bool parseProxyServer(Napi::Env env, Napi::Value val, std::optional<rtc::ProxyServer> &out)
@@ -160,7 +264,7 @@ inline bool parseProxyServer(Napi::Env env, Napi::Value val, std::optional<rtc::
   }
 
   uint16_t port = 0;
-  if (!parseUint16Port(env, portVal, "proxyServer.port", port))
+  if (!parseUint16(env, portVal, "proxyServer.port", port))
     return false;
 
   std::string strType = typeVal.As<Napi::String>().ToString();

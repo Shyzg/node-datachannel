@@ -14,7 +14,9 @@ const WRITE_BUFFER_HIGH_WATER_BYTES = 64 * 1024;
 export default class DataChannelStream extends stream.Duplex {
   private _rawChannel: DataChannel;
   private _readActive: boolean;
-  private _corkedForOpen: boolean;
+  private _closed: boolean;
+  private _pendingOpenWrite: { chunk: unknown; callback: (error?: Error | null) => void } | null =
+    null;
   private _pendingWriteCallback: ((error?: Error | null) => void) | null = null;
   private _label: string;
   private _id: number;
@@ -29,7 +31,7 @@ export default class DataChannelStream extends stream.Duplex {
 
     this._rawChannel = rawChannel;
     this._readActive = true;
-    this._corkedForOpen = false;
+    this._closed = false;
     this._label = rawChannel.getLabel();
     this._id = rawChannel.getId();
     this._protocol = rawChannel.getProtocol();
@@ -43,14 +45,15 @@ export default class DataChannelStream extends stream.Duplex {
 
     // End readable side without destroying so unread buffered messages can still be drained
     rawChannel.onClosed(() => {
+      this._closed = true;
       if (!this.destroyed) {
         this.push(null);
       }
 
-      // If closed while corked waiting to open, uncork so queued writes fail instead of hanging
-      if (this._corkedForOpen) {
-        this._corkedForOpen = false;
-        this.uncork();
+      if (this._pendingOpenWrite) {
+        const pending = this._pendingOpenWrite;
+        this._pendingOpenWrite = null;
+        pending.callback(new Error('DataChannel closed'));
       }
 
       if (this._pendingWriteCallback) {
@@ -78,24 +81,21 @@ export default class DataChannelStream extends stream.Duplex {
       });
     }
 
-    // Buffer all writes until the DataChannel opens.
+    // Wait for onOpen inside _write() instead of cork(), because Writable.end() forcibly uncorks.
     // Re-check isOpen() after registering onOpen() to avoid missing an open transition on the C++ thread.
     if (!rawChannel.isOpen()) {
-      this._corkedForOpen = true;
-      this.cork();
-      rawChannel.onOpen(() => {
+      const handleOpen = () => {
         const id = rawChannel.getId();
         if (id >= 0) this._id = id;
-        if (this._corkedForOpen) {
-          this._corkedForOpen = false;
-          this.uncork();
+        const pending = this._pendingOpenWrite;
+        if (pending) {
+          this._pendingOpenWrite = null;
+          this._sendChunk(pending.chunk, pending.callback);
         }
-      });
-      if (rawChannel.isOpen() && this._corkedForOpen) {
-        const id = rawChannel.getId();
-        if (id >= 0) this._id = id;
-        this._corkedForOpen = false;
-        this.uncork();
+      };
+      rawChannel.onOpen(handleOpen);
+      if (rawChannel.isOpen()) {
+        handleOpen();
       }
     }
   }
@@ -110,6 +110,20 @@ export default class DataChannelStream extends stream.Duplex {
     _encoding: BufferEncoding,
     callback: (error?: Error | null) => void,
   ): void {
+    if (this._closed) {
+      callback(new Error('DataChannel closed'));
+      return;
+    }
+
+    if (!this._rawChannel.isOpen()) {
+      this._pendingOpenWrite = { chunk, callback };
+      return;
+    }
+
+    this._sendChunk(chunk, callback);
+  }
+
+  private _sendChunk(chunk: unknown, callback: (error?: Error | null) => void): void {
     let sentOk: boolean;
 
     const prevBuffered =
@@ -156,9 +170,10 @@ export default class DataChannelStream extends stream.Duplex {
   }
 
   _destroy(maybeErr: Error | null, callback: (error?: Error | null) => void): void {
-    if (this._corkedForOpen) {
-      this._corkedForOpen = false;
-      this.uncork();
+    if (this._pendingOpenWrite) {
+      const pending = this._pendingOpenWrite;
+      this._pendingOpenWrite = null;
+      pending.callback(maybeErr ?? new Error('DataChannel stream destroyed'));
     }
     if (this._pendingWriteCallback) {
       const cb = this._pendingWriteCallback;

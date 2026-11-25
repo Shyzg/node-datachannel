@@ -62,11 +62,8 @@ set(SRC_FILES
 if(NOT NO_MEDIA)
     list(APPEND SRC_FILES
         src/cpp/media-direction.cpp
+        src/cpp/media-handlers-wrapper.cpp
         src/cpp/media-mediahandler-helper.cpp
-        src/cpp/media-pacinghandler-wrapper.cpp
-        src/cpp/media-rtcpnackresponder-wrapper.cpp
-        src/cpp/media-rtcpreceivingsession-wrapper.cpp
-        src/cpp/media-rtcpsrreporter-wrapper.cpp
         src/cpp/media-rtppacketizationconfig-wrapper.cpp
         src/cpp/media-rtppacketizer-wrapper.cpp
         src/cpp/media-track-wrapper.cpp

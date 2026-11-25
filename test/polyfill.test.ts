@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { after, describe, mock, test } from 'node:test';
 import { type DataChannel, PeerConnection, cleanup, initLogger } from '../src/lib/index.ts';
 import {
@@ -261,19 +262,24 @@ describe('polyfill', { timeout: 30_000 }, () => {
     const initialId = dc.id;
     assert.equal(initialId, null);
 
+    const peer1RemoteReady = Promise.withResolvers<void>();
+    const peer2RemoteReady = Promise.withResolvers<void>();
+    peer1.addEventListener('icecandidate', (e) => {
+      const cand = (e as RTCPeerConnectionIceEvent).candidate;
+      peer2RemoteReady.promise.then(() => peer2.addIceCandidate(cand));
+    });
+    peer2.addEventListener('icecandidate', (e) => {
+      const cand = (e as RTCPeerConnectionIceEvent).candidate;
+      peer1RemoteReady.promise.then(() => peer1.addIceCandidate(cand));
+    });
+
     const peer1Offer = await peer1.createOffer();
     await peer2.setRemoteDescription(peer1Offer);
+    peer2RemoteReady.resolve();
 
     const peer2Answer = await peer2.createAnswer();
     await peer1.setRemoteDescription(peer2Answer);
-
-    peer1.addEventListener('icecandidate', (e) => {
-      peer2.addIceCandidate((e as RTCPeerConnectionIceEvent).candidate);
-    });
-
-    peer2.addEventListener('icecandidate', (e) => {
-      peer1.addIceCandidate((e as RTCPeerConnectionIceEvent).candidate);
-    });
+    peer1RemoteReady.resolve();
 
     await eventPromise(dc, 'open');
 
@@ -592,5 +598,105 @@ describe('polyfill', { timeout: 30_000 }, () => {
     const racingDc = new PolyfillRTCDataChannel(racingRaw);
     assert.equal(racingDc.readyState, 'open');
     assert.equal(racingDc.id, 5);
+  });
+
+  test('closes unconnected channels cleanly without hanging Node, handles signaling edge cases, and preserves pre-close messages', async () => {
+    // Closing an RTCPeerConnection with an unconnected DataChannel must not hang process exit
+    const exitCheck = spawnSync(
+      process.execPath,
+      [
+        '-e',
+        `import('./src/polyfill/index.ts').then(({ RTCPeerConnection }) => {
+          const pc = new RTCPeerConnection({ iceServers: [] });
+          pc.createDataChannel('unconnected');
+          pc.close();
+        });`,
+      ],
+      { timeout: 3000, encoding: 'utf8' },
+    );
+    assert.equal(exitCheck.error, undefined);
+    assert.equal(exitCheck.status, 0);
+
+    // Repeated createOffer() in have-local-offer must resolve instead of hanging, and createAnswer() must reject
+    const pcOffer = new RTCPeerConnection({ iceServers: [] });
+    pcOffer.createDataChannel('c');
+    const offer1 = await pcOffer.createOffer();
+    const offer2 = await pcOffer.createOffer();
+    assert.equal(offer2.type, 'offer');
+    assert.ok(offer2.sdp?.includes('a=ice-ufrag:'));
+    const ufrag1 = offer1.sdp?.match(/a=ice-ufrag:\S+/)?.[0];
+    assert.ok(ufrag1 && offer2.sdp?.includes(ufrag1));
+    await assert.rejects(() => pcOffer.createAnswer(), /InvalidStateError|Cannot create answer/i);
+    pcOffer.close();
+
+    // Argumentless setLocalDescription() creates/applies description
+    const pcImplicit = new RTCPeerConnection({
+      peerConnection: new PeerConnection('Implicit', {
+        iceServers: [],
+        disableAutoNegotiation: true,
+      }),
+    });
+    pcImplicit.createDataChannel('imp');
+    await pcImplicit.setLocalDescription();
+    assert.equal(pcImplicit.signalingState, 'have-local-offer');
+    assert.notEqual(pcImplicit.localDescription, null);
+    pcImplicit.close();
+
+    // Rollback resets cached offer so next createOffer() transitions back to have-local-offer
+    const pcRollback = new RTCPeerConnection({ iceServers: [] });
+    pcRollback.createDataChannel('rb');
+    await new Promise((r) => setTimeout(r, 30));
+    await pcRollback.setLocalDescription({ type: 'rollback' });
+    assert.equal(pcRollback.signalingState, 'stable');
+    const freshOffer = await pcRollback.createOffer();
+    assert.equal(freshOffer.type, 'offer');
+    assert.equal(pcRollback.signalingState, 'have-local-offer');
+    await pcRollback.setRemoteDescription({ type: 'rollback' });
+    assert.equal(pcRollback.signalingState, 'stable');
+    pcRollback.close();
+
+    // Pre-close DataChannel messages are preserved when wrapping an already-closed channel
+    const a = new PeerConnection('PreCloseA', { iceServers: [] });
+    const b = new PeerConnection('PreCloseB', { iceServers: [] });
+    a.onLocalDescription((s, t) => b.setRemoteDescription(s, t));
+    b.onLocalDescription((s, t) => a.setRemoteDescription(s, t));
+    a.onLocalCandidate((c, m) => b.addRemoteCandidate(c, m));
+    b.onLocalCandidate((c, m) => a.addRemoteCandidate(c, m));
+    const rawDc2Deferred = Promise.withResolvers<DataChannel>();
+    b.onDataChannel((dc2) => {
+      rawDc2Deferred.resolve(dc2);
+    });
+    const dca = a.createDataChannel('pre-close');
+    dca.onOpen(() => {
+      dca.sendMessage('must-not-drop');
+      dca.close();
+    });
+    const rawDc2 = await rawDc2Deferred.promise;
+    await new Promise((r) => setTimeout(r, 100));
+    const polyDc = new PolyfillRTCDataChannel(rawDc2);
+    const received: unknown[] = [];
+    const dcClosed = Promise.withResolvers<void>();
+    polyDc.onmessage = (ev) => received.push(ev.data);
+    polyDc.onclose = () => dcClosed.resolve();
+    await dcClosed.promise;
+    assert.deepEqual(received, ['must-not-drop']);
+    a.close();
+    b.close();
+
+    // EventInit options (bubbles, cancelable) are forwarded on RTCDataChannelEvent and RTCErrorEvent
+    const dcEvt = new RTCDataChannelEvent('datachannel', {
+      channel: polyDc,
+      bubbles: true,
+      cancelable: true,
+    });
+    assert.equal(dcEvt.bubbles, true);
+    assert.equal(dcEvt.cancelable, true);
+    const errEvt = new RTCErrorEvent('error', {
+      error: new RTCError({ errorDetail: 'data-channel-failure' }, 'boom'),
+      bubbles: true,
+      cancelable: true,
+    });
+    assert.equal(errEvt.bubbles, true);
+    assert.equal(errEvt.cancelable, true);
   });
 });

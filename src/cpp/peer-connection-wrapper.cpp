@@ -128,6 +128,174 @@ const char *candidateTransportTypeToString(rtc::Candidate::TransportType transpo
     return "unknown";
   }
 }
+bool parsePeerConnectionConfig(Napi::Env env, const Napi::Object &config, rtc::Configuration &rtcConfig)
+{
+  if (!config.Get("iceServers").IsArray())
+  {
+    Napi::TypeError::New(env, "iceServers(Array) expected").ThrowAsJavaScriptException();
+    return false;
+  }
+
+  Napi::Array iceServers = config.Get("iceServers").As<Napi::Array>();
+  for (uint32_t i = 0; i < iceServers.Length(); i++)
+  {
+    Napi::Value item = iceServers.Get(i);
+    if (item.IsString())
+    {
+      try
+      {
+        rtcConfig.iceServers.emplace_back(item.As<Napi::String>().ToString());
+      }
+      catch (std::exception &ex)
+      {
+        Napi::TypeError::New(env, "SyntaxError: IceServer config error: " + std::string(ex.what()))
+            .ThrowAsJavaScriptException();
+        return false;
+      }
+    }
+    else
+    {
+      if (!item.IsObject())
+      {
+        Napi::TypeError::New(env, "IceServer config should be a string Or an object").ThrowAsJavaScriptException();
+        return false;
+      }
+
+      Napi::Object iceServer = item.As<Napi::Object>();
+      if (!iceServer.Get("hostname").IsString() || !iceServer.Get("port").IsNumber())
+      {
+        Napi::TypeError::New(env, "IceServer config error (hostname OR/AND port is not suitable)")
+            .ThrowAsJavaScriptException();
+        return false;
+      }
+
+      uint16_t serverPort = 0;
+      if (!parseUint16(env, iceServer.Get("port"), "iceServer.port", serverPort))
+        return false;
+
+      Napi::Value relayTypeVal = iceServer.Get("relayType");
+      if (!relayTypeVal.IsUndefined())
+      {
+        if (!relayTypeVal.IsString() || !iceServer.Get("username").IsString() || !iceServer.Get("password").IsString())
+        {
+          Napi::TypeError::New(env, "IceServer config error (username AND password is needed)")
+              .ThrowAsJavaScriptException();
+          return false;
+        }
+
+        std::string relayTypeStr = relayTypeVal.As<Napi::String>().ToString();
+        rtc::IceServer::RelayType relayType;
+        if (relayTypeStr == "TurnUdp")
+          relayType = rtc::IceServer::RelayType::TurnUdp;
+        else if (relayTypeStr == "TurnTcp")
+          relayType = rtc::IceServer::RelayType::TurnTcp;
+        else if (relayTypeStr == "TurnTls")
+          relayType = rtc::IceServer::RelayType::TurnTls;
+        else
+        {
+          Napi::TypeError::New(env, "Unknown relayType, expected \"TurnUdp\", \"TurnTcp\", or \"TurnTls\"")
+              .ThrowAsJavaScriptException();
+          return false;
+        }
+
+        rtcConfig.iceServers.emplace_back(
+            rtc::IceServer(iceServer.Get("hostname").As<Napi::String>(), serverPort,
+                           iceServer.Get("username").As<Napi::String>(), iceServer.Get("password").As<Napi::String>(),
+                           relayType));
+      }
+      else
+      {
+        if (!iceServer.Get("username").IsUndefined() || !iceServer.Get("password").IsUndefined())
+        {
+          Napi::TypeError::New(
+              env, "IceServer config with username/password requires relayType (\"TurnUdp\", \"TurnTcp\", or \"TurnTls\")")
+              .ThrowAsJavaScriptException();
+          return false;
+        }
+        rtcConfig.iceServers.emplace_back(rtc::IceServer(iceServer.Get("hostname").As<Napi::String>(), serverPort));
+      }
+    }
+  }
+
+  Napi::Value proxyVal = config.Get("proxyServer");
+  if (!proxyVal.IsUndefined() && !parseProxyServer(env, proxyVal, rtcConfig.proxyServer))
+    return false;
+
+  if (!parseOptionalString(env, config, "bindAddress", rtcConfig.bindAddress))
+    return false;
+
+  if (!config.Get("portRangeBegin").IsUndefined())
+  {
+    uint16_t port = 0;
+    if (!parseUint16(env, config.Get("portRangeBegin"), "portRangeBegin", port))
+      return false;
+    rtcConfig.portRangeBegin = port;
+  }
+  if (!config.Get("portRangeEnd").IsUndefined())
+  {
+    uint16_t port = 0;
+    if (!parseUint16(env, config.Get("portRangeEnd"), "portRangeEnd", port))
+      return false;
+    rtcConfig.portRangeEnd = port;
+  }
+
+  if (config.Get("enableIceTcp").IsBoolean())
+    rtcConfig.enableIceTcp = config.Get("enableIceTcp").As<Napi::Boolean>();
+  if (config.Get("enableIceUdpMux").IsBoolean())
+    rtcConfig.enableIceUdpMux = config.Get("enableIceUdpMux").As<Napi::Boolean>();
+  if (config.Get("disableAutoNegotiation").IsBoolean())
+    rtcConfig.disableAutoNegotiation = config.Get("disableAutoNegotiation").As<Napi::Boolean>();
+  if (config.Get("disableAutoGathering").IsBoolean())
+    rtcConfig.disableAutoGathering = config.Get("disableAutoGathering").As<Napi::Boolean>();
+  if (config.Get("forceMediaTransport").IsBoolean())
+    rtcConfig.forceMediaTransport = config.Get("forceMediaTransport").As<Napi::Boolean>();
+
+  if (!config.Get("maxMessageSize").IsUndefined())
+  {
+    size_t sizeVal = 0;
+    if (!parsePositiveSize(env, config.Get("maxMessageSize"), "maxMessageSize", sizeVal))
+      return false;
+    rtcConfig.maxMessageSize = sizeVal;
+  }
+
+  if (!config.Get("mtu").IsUndefined())
+  {
+    size_t mtuVal = 0;
+    if (!parsePositiveSize(env, config.Get("mtu"), "mtu", mtuVal))
+      return false;
+    rtcConfig.mtu = mtuVal;
+  }
+
+  if (!config.Get("iceTransportPolicy").IsUndefined())
+  {
+    if (!config.Get("iceTransportPolicy").IsString())
+    {
+      Napi::TypeError::New(env, "Invalid ICE transport policy, expected string").ThrowAsJavaScriptException();
+      return false;
+    }
+    std::string strPolicy = config.Get("iceTransportPolicy").As<Napi::String>().ToString();
+    if (strPolicy == "all")
+      rtcConfig.iceTransportPolicy = rtc::TransportPolicy::All;
+    else if (strPolicy == "relay")
+      rtcConfig.iceTransportPolicy = rtc::TransportPolicy::Relay;
+    else
+    {
+      Napi::TypeError::New(env, "Unknown ICE transport policy").ThrowAsJavaScriptException();
+      return false;
+    }
+  }
+
+  if (config.Get("disableFingerprintVerification").IsBoolean())
+    rtcConfig.disableFingerprintVerification = config.Get("disableFingerprintVerification").As<Napi::Boolean>();
+  if (!parseOptionalString(env, config, "certificatePemFile", rtcConfig.certificatePemFile))
+    return false;
+  if (!parseOptionalString(env, config, "keyPemFile", rtcConfig.keyPemFile))
+    return false;
+  if (!parseOptionalString(env, config, "keyPemPass", rtcConfig.keyPemPass))
+    return false;
+
+  return true;
+}
 } // namespace
 
 void PeerConnectionWrapper::CloseAll(AddonData *data)
@@ -206,175 +374,10 @@ PeerConnectionWrapper::PeerConnectionWrapper(const Napi::CallbackInfo &info)
   }
 
   rtc::Configuration rtcConfig;
-  Napi::Object config = info[1].As<Napi::Object>();
-  if (!config.Get("iceServers").IsArray())
-  {
-    Napi::TypeError::New(env, "iceServers(Array) expected").ThrowAsJavaScriptException();
+  if (!parsePeerConnectionConfig(env, info[1].As<Napi::Object>(), rtcConfig))
     return;
-  }
 
-  Napi::Array iceServers = config.Get("iceServers").As<Napi::Array>();
-  for (uint32_t i = 0; i < iceServers.Length(); i++)
-  {
-    Napi::Value item = iceServers.Get(i);
-    if (item.IsString())
-    {
-      try
-      {
-        rtcConfig.iceServers.emplace_back(item.As<Napi::String>().ToString());
-      }
-      catch (std::exception &ex)
-      {
-        Napi::TypeError::New(env, "SyntaxError: IceServer config error: " + std::string(ex.what()))
-            .ThrowAsJavaScriptException();
-        return;
-      }
-    }
-    else
-    {
-      if (!item.IsObject())
-      {
-        Napi::TypeError::New(env, "IceServer config should be a string Or an object").ThrowAsJavaScriptException();
-        return;
-      }
-
-      Napi::Object iceServer = item.As<Napi::Object>();
-      if (!iceServer.Get("hostname").IsString() || !iceServer.Get("port").IsNumber())
-      {
-        Napi::TypeError::New(env, "IceServer config error (hostname OR/AND port is not suitable)")
-            .ThrowAsJavaScriptException();
-        return;
-      }
-
-      uint16_t serverPort = 0;
-      if (!parseUint16Port(env, iceServer.Get("port"), "iceServer.port", serverPort))
-        return;
-
-      Napi::Value relayTypeVal = iceServer.Get("relayType");
-      if (!relayTypeVal.IsUndefined())
-      {
-        if (!relayTypeVal.IsString() || !iceServer.Get("username").IsString() || !iceServer.Get("password").IsString())
-        {
-          Napi::TypeError::New(env, "IceServer config error (username AND password is needed)")
-              .ThrowAsJavaScriptException();
-          return;
-        }
-
-        std::string relayTypeStr = relayTypeVal.As<Napi::String>().ToString();
-        rtc::IceServer::RelayType relayType;
-        if (relayTypeStr == "TurnUdp")
-          relayType = rtc::IceServer::RelayType::TurnUdp;
-        else if (relayTypeStr == "TurnTcp")
-          relayType = rtc::IceServer::RelayType::TurnTcp;
-        else if (relayTypeStr == "TurnTls")
-          relayType = rtc::IceServer::RelayType::TurnTls;
-        else
-        {
-          Napi::TypeError::New(env, "Unknown relayType, expected \"TurnUdp\", \"TurnTcp\", or \"TurnTls\"")
-              .ThrowAsJavaScriptException();
-          return;
-        }
-
-        rtcConfig.iceServers.emplace_back(
-            rtc::IceServer(iceServer.Get("hostname").As<Napi::String>(), serverPort,
-                           iceServer.Get("username").As<Napi::String>(), iceServer.Get("password").As<Napi::String>(),
-                           relayType));
-      }
-      else
-      {
-        if (!iceServer.Get("username").IsUndefined() || !iceServer.Get("password").IsUndefined())
-        {
-          Napi::TypeError::New(
-              env, "IceServer config with username/password requires relayType (\"TurnUdp\", \"TurnTcp\", or \"TurnTls\")")
-              .ThrowAsJavaScriptException();
-          return;
-        }
-        rtcConfig.iceServers.emplace_back(rtc::IceServer(iceServer.Get("hostname").As<Napi::String>(), serverPort));
-      }
-    }
-  }
-
-  // Proxy Server
-  Napi::Value proxyVal = config.Get("proxyServer");
-  if (!proxyVal.IsUndefined())
-  {
-    if (!parseProxyServer(env, proxyVal, rtcConfig.proxyServer))
-      return;
-  }
-
-  if (config.Get("bindAddress").IsString())
-    rtcConfig.bindAddress = config.Get("bindAddress").As<Napi::String>().ToString();
-
-  if (!config.Get("portRangeBegin").IsUndefined())
-  {
-    uint16_t port = 0;
-    if (!parseUint16Port(env, config.Get("portRangeBegin"), "portRangeBegin", port))
-      return;
-    rtcConfig.portRangeBegin = port;
-  }
-  if (!config.Get("portRangeEnd").IsUndefined())
-  {
-    uint16_t port = 0;
-    if (!parseUint16Port(env, config.Get("portRangeEnd"), "portRangeEnd", port))
-      return;
-    rtcConfig.portRangeEnd = port;
-  }
-
-  if (config.Get("enableIceTcp").IsBoolean())
-    rtcConfig.enableIceTcp = config.Get("enableIceTcp").As<Napi::Boolean>();
-  if (config.Get("enableIceUdpMux").IsBoolean())
-    rtcConfig.enableIceUdpMux = config.Get("enableIceUdpMux").As<Napi::Boolean>();
-  if (config.Get("disableAutoNegotiation").IsBoolean())
-    rtcConfig.disableAutoNegotiation = config.Get("disableAutoNegotiation").As<Napi::Boolean>();
-  if (config.Get("disableAutoGathering").IsBoolean())
-    rtcConfig.disableAutoGathering = config.Get("disableAutoGathering").As<Napi::Boolean>();
-  if (config.Get("forceMediaTransport").IsBoolean())
-    rtcConfig.forceMediaTransport = config.Get("forceMediaTransport").As<Napi::Boolean>();
-
-  if (!config.Get("maxMessageSize").IsUndefined())
-  {
-    size_t sizeVal = 0;
-    if (!parsePositiveSize(env, config.Get("maxMessageSize"), "maxMessageSize", sizeVal))
-      return;
-    rtcConfig.maxMessageSize = sizeVal;
-  }
-
-  if (!config.Get("mtu").IsUndefined())
-  {
-    size_t mtuVal = 0;
-    if (!parsePositiveSize(env, config.Get("mtu"), "mtu", mtuVal))
-      return;
-    rtcConfig.mtu = mtuVal;
-  }
-
-  if (!config.Get("iceTransportPolicy").IsUndefined())
-  {
-    if (!config.Get("iceTransportPolicy").IsString())
-    {
-      Napi::TypeError::New(env, "Invalid ICE transport policy, expected string").ThrowAsJavaScriptException();
-      return;
-    }
-    std::string strPolicy = config.Get("iceTransportPolicy").As<Napi::String>().ToString();
-    if (strPolicy == "all")
-      rtcConfig.iceTransportPolicy = rtc::TransportPolicy::All;
-    else if (strPolicy == "relay")
-      rtcConfig.iceTransportPolicy = rtc::TransportPolicy::Relay;
-    else
-    {
-      Napi::TypeError::New(env, "Unknown ICE transport policy").ThrowAsJavaScriptException();
-      return;
-    }
-  }
-
-  if (config.Get("disableFingerprintVerification").IsBoolean())
-    rtcConfig.disableFingerprintVerification = config.Get("disableFingerprintVerification").As<Napi::Boolean>();
-  if (config.Get("certificatePemFile").IsString())
-    rtcConfig.certificatePemFile = config.Get("certificatePemFile").As<Napi::String>().ToString();
-  if (config.Get("keyPemFile").IsString())
-    rtcConfig.keyPemFile = config.Get("keyPemFile").As<Napi::String>().ToString();
-  if (config.Get("keyPemPass").IsString())
-    rtcConfig.keyPemPass = config.Get("keyPemPass").As<Napi::String>().ToString();
-
+  ActiveInstanceGuard guard;
   try
   {
     PLOG_DEBUG << "Creating a new Peer Connection";
@@ -387,9 +390,7 @@ PeerConnectionWrapper::PeerConnectionWrapper(const Napi::CallbackInfo &info)
     return;
   }
 
-  mAddonData = getAddonData(env);
-  if (mAddonData && mAddonData->peerConnections.insert(this).second)
-    ++gActiveNativeInstances;
+  guard.commit(mAddonData, env, &AddonData::peerConnections, this);
 }
 
 PeerConnectionWrapper::~PeerConnectionWrapper()
@@ -404,38 +405,27 @@ PeerConnectionWrapper::~PeerConnectionWrapper()
 void PeerConnectionWrapper::scheduleCloseOnce(PeerConnectionWrapper *self, const std::shared_ptr<CloseState> &state,
                                               const std::shared_ptr<ThreadSafeCallback> &queue)
 {
-  if (!queue || state->closeDispatched.exchange(true))
-    return;
-
-  queue->dispatch(
-      [self, state](Napi::Env env)
-      {
-        if (!state->alive.load())
-          throw ThreadSafeCallback::CancelException();
-        if (!self->mOnStateChangeFn.IsEmpty())
-          self->mOnStateChangeFn.Call({Napi::String::New(env, "closed")});
-      },
-      [self, state]()
-      {
-        if (state->alive.load())
-          self->doCleanup();
-      });
+  EventQueueState::scheduleCloseOnce(self, state, queue,
+                                     [self](Napi::Env env)
+                                     {
+                                       if (!self->mOnStateChangeFn.IsEmpty())
+                                         self->mOnStateChangeFn.Call({Napi::String::New(env, "closed")});
+                                     });
 }
 
 std::shared_ptr<ThreadSafeCallback> PeerConnectionWrapper::ensureEventQueue(Napi::Env env)
 {
-  mSelfRef.acquire(this);
-  if (!mEventQueue)
-  {
-    mEventQueue = std::make_shared<ThreadSafeCallback>(env, /*unref=*/false);
-  }
+  return mEvents.ensure(this, env);
+}
 
-  if (!mCloseHookInstalled && mRtcPeerConnPtr)
+void PeerConnectionWrapper::ensureCloseHook()
+{
+  if (!mEvents.closeHookInstalled && mRtcPeerConnPtr && mEvents.queue)
   {
-    mCloseHookInstalled = true;
-    auto queue = mEventQueue;
+    mEvents.closeHookInstalled = true;
+    auto queue = mEvents.queue;
     mRtcPeerConnPtr->onStateChange(
-        [self = this, state = mCloseState, queue](rtc::PeerConnection::State pcState)
+        [self = this, state = mEvents.closeState, queue](rtc::PeerConnection::State pcState)
         {
           if (!state->alive.load())
             return;
@@ -457,13 +447,8 @@ std::shared_ptr<ThreadSafeCallback> PeerConnectionWrapper::ensureEventQueue(Napi
         });
   }
 
-  return mEventQueue;
-}
-
-void PeerConnectionWrapper::checkAlreadyClosed()
-{
   if (mRtcPeerConnPtr && mRtcPeerConnPtr->state() == rtc::PeerConnection::State::Closed)
-    scheduleCloseOnce(this, mCloseState, mEventQueue);
+    scheduleCloseOnce(this, mEvents.closeState, mEvents.queue);
 }
 
 void PeerConnectionWrapper::doClose(bool fromDestructor)
@@ -505,12 +490,11 @@ void PeerConnectionWrapper::doClose(bool fromDestructor)
 #endif
 
   bool hasUserCloseCb = !mOnStateChangeFn.IsEmpty() || !mOnIceStateChangeFn.IsEmpty();
-  bool willEmitClose = hasUserCloseCb && mCloseState->closeDispatched.load();
+  bool willEmitClose = hasUserCloseCb && mEvents.closeState->closeDispatched.load();
 
   if (mRtcPeerConnPtr)
   {
     bool wasClosed = mRtcPeerConnPtr->state() == rtc::PeerConnection::State::Closed;
-    bool wasIceClosed = mRtcPeerConnPtr->iceState() == rtc::PeerConnection::IceState::Closed;
     bool closedOk = false;
     try
     {
@@ -523,9 +507,14 @@ void PeerConnectionWrapper::doClose(bool fromDestructor)
     }
     mRtcPeerConnPtr.reset();
 
-    bool stateWillEmit = closedOk && !wasClosed && !mOnStateChangeFn.IsEmpty();
-    bool iceWillEmit = closedOk && !wasIceClosed && !mOnIceStateChangeFn.IsEmpty();
-    willEmitClose = stateWillEmit || iceWillEmit || (hasUserCloseCb && mCloseState->closeDispatched.load());
+    // Guard against a background thread setting State::Closed just before invoking onStateChange:
+    // ensure close callback + doCleanup() is scheduled exactly once.
+    if (hasUserCloseCb && (wasClosed || closedOk))
+    {
+      scheduleCloseOnce(this, mEvents.closeState, mEvents.queue);
+    }
+
+    willEmitClose = hasUserCloseCb && mEvents.closeState->closeDispatched.load();
   }
 
   if (!willEmitClose)
@@ -537,8 +526,8 @@ void PeerConnectionWrapper::close(const Napi::CallbackInfo &) { doClose(); }
 void PeerConnectionWrapper::doCleanup(bool fromDestructor)
 {
   PLOG_DEBUG << "doCleanup() called";
-  mCloseState->alive.store(false);
-  resetCallback(mEventQueue);
+  mEvents.closeState->alive.store(false);
+  resetCallback(mEvents.queue);
   resetFuncRef(mOnLocalDescriptionFn, fromDestructor);
   resetFuncRef(mOnLocalCandidateFn, fromDestructor);
   resetFuncRef(mOnStateChangeFn, fromDestructor);
@@ -558,7 +547,7 @@ void PeerConnectionWrapper::doCleanup(bool fromDestructor)
     mAddonData = nullptr;
   }
 
-  mSelfRef.release(this, fromDestructor);
+  mEvents.selfRef.release(this, fromDestructor);
 }
 
 void PeerConnectionWrapper::setLocalDescription(const Napi::CallbackInfo &info)
@@ -755,7 +744,7 @@ Napi::Value PeerConnectionWrapper::createDataChannel(const Napi::CallbackInfo &i
     if (!initConfig.Get("id").IsUndefined())
     {
       uint16_t channelId = 0;
-      if (!parseUint16Port(env, initConfig.Get("id"), "id", channelId))
+      if (!parseUint16(env, initConfig.Get("id"), "id", channelId))
         return env.Null();
       init.id = channelId;
     }
@@ -829,8 +818,8 @@ void PeerConnectionWrapper::bindCallback(const Napi::CallbackInfo &info, const c
   auto queue = ensureEventQueue(env);
   fnRef = Napi::Persistent(info[0].As<Napi::Function>());
   uint64_t gen = ++genRef;
-  bindFn(mCloseState, std::move(queue), gen);
-  checkAlreadyClosed();
+  bindFn(mEvents.closeState, std::move(queue), gen);
+  ensureCloseHook();
 }
 
 void PeerConnectionWrapper::onLocalDescription(const Napi::CallbackInfo &info)
@@ -894,7 +883,7 @@ void PeerConnectionWrapper::onStateChange(const Napi::CallbackInfo &info)
 
   ensureEventQueue(env);
   mOnStateChangeFn = Napi::Persistent(info[0].As<Napi::Function>());
-  checkAlreadyClosed();
+  ensureCloseHook();
 }
 
 void PeerConnectionWrapper::onIceStateChange(const Napi::CallbackInfo &info)

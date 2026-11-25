@@ -49,8 +49,8 @@
   "scripts": {
     "install": "cmake-js build",
     "rebuild": "cmake-js rebuild",
-    "install:nice": "pnpm run clean && cmake-js configure --CDUSE_NICE=1 && cmake-js build",
-    "install:gnu": "pnpm run clean && cmake-js configure --CDUSE_GNUTLS=1 && cmake-js build",
+    "install:nice": "pnpm run clean && cmake-js configure --CDUSE_NICE=1 && cmake-js build && pnpm run build:ts",
+    "install:gnu": "pnpm run clean && cmake-js configure --CDUSE_GNUTLS=1 && cmake-js build && pnpm run build:ts",
     "compile": "cmake-js build",
     "compile:debug": "cmake-js configure -D && cmake-js build -D",
     "build": "pnpm run compile && pnpm run build:ts",

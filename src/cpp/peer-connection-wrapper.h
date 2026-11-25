@@ -65,26 +65,17 @@ public:
   void doCleanup(bool fromDestructor = false);
 
 private:
-  struct CloseState
-  {
-    std::atomic<bool> alive{true};
-    std::atomic<bool> closeDispatched{false};
-  };
-
   static void scheduleCloseOnce(PeerConnectionWrapper *self, const std::shared_ptr<CloseState> &state,
                                 const std::shared_ptr<ThreadSafeCallback> &queue);
   std::shared_ptr<ThreadSafeCallback> ensureEventQueue(Napi::Env env);
-  void checkAlreadyClosed();
+  void ensureCloseHook();
   template <typename BindFn>
   void bindCallback(const Napi::CallbackInfo &info, const char *methodName, Napi::FunctionReference &fnRef,
                     uint64_t &genRef, BindFn &&bindFn);
 
   AddonData *mAddonData = nullptr;
   std::unique_ptr<rtc::PeerConnection> mRtcPeerConnPtr = nullptr;
-  std::shared_ptr<CloseState> mCloseState = std::make_shared<CloseState>();
-  std::shared_ptr<ThreadSafeCallback> mEventQueue = nullptr;
-  SelfRef mSelfRef;
-  bool mCloseHookInstalled = false;
+  EventQueueState mEvents;
 
   // JS Callback References (JS thread only)
   Napi::FunctionReference mOnLocalDescriptionFn;

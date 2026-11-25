@@ -35,6 +35,7 @@ export default class RTCPeerConnection extends EventTarget implements globalThis
   #localOfferConsumed = false;
   #localAnswerConsumed = false;
   #dataChannels: Set<globalThis.RTCDataChannel>;
+  #dataChannelsOpened = 0;
   #dataChannelsClosed = 0;
   #config: globalThis.RTCConfiguration;
   #sctp: RTCSctpTransport;
@@ -180,11 +181,7 @@ export default class RTCPeerConnection extends EventTarget implements globalThis
 
     this.#peerConnection.onDataChannel((channel) => {
       const dc = new RTCDataChannel(channel);
-      this.#dataChannels.add(dc);
-      dc.addEventListener('close', () => {
-        this.#dataChannels.delete(dc);
-        this.#dataChannelsClosed++;
-      });
+      this.#trackDataChannel(dc);
       this.dispatchEvent(new RTCDataChannelEvent('datachannel', { channel: dc }));
     });
 
@@ -379,7 +376,33 @@ export default class RTCPeerConnection extends EventTarget implements globalThis
     throw new DOMException('Not implemented');
   }
 
+  #trackDataChannel(dc: RTCDataChannel): void {
+    this.#dataChannels.add(dc);
+    if (dc.readyState === 'open') {
+      this.#dataChannelsOpened++;
+    } else {
+      dc.addEventListener(
+        'open',
+        () => {
+          this.#dataChannelsOpened++;
+        },
+        { once: true },
+      );
+    }
+    dc.addEventListener(
+      'close',
+      () => {
+        this.#dataChannels.delete(dc);
+        this.#dataChannelsClosed++;
+      },
+      { once: true },
+    );
+  }
+
   close(): void {
+    for (const dc of [...this.#dataChannels]) {
+      dc.close();
+    }
     this.#peerConnection.close();
     if (this.#localOfferConsumed && !this.#localOffer.settled) {
       this.#localOffer.reject(new DOMException('PeerConnection closed', 'InvalidStateError'));
@@ -403,17 +426,35 @@ export default class RTCPeerConnection extends EventTarget implements globalThis
     failureCallback?: globalThis.RTCPeerConnectionErrorCallback,
   ): Promise<globalThis.RTCSessionDescriptionInit> | Promise<void> {
     let result: Promise<globalThis.RTCSessionDescriptionInit>;
-    if (this.connectionState === 'closed' || this.signalingState === 'closed') {
+    const state = this.signalingState;
+    if (this.connectionState === 'closed' || state === 'closed') {
       result = Promise.reject(new DOMException('PeerConnection closed', 'InvalidStateError'));
-    } else {
-      if (this.#localAnswerConsumed) {
+    } else if (state === 'have-local-offer' || state === 'have-remote-pranswer') {
+      result = Promise.reject(
+        new DOMException(`Cannot create answer in signaling state '${state}'`, 'InvalidStateError'),
+      );
+    } else if (this.#localAnswerConsumed) {
+      if (state !== 'have-remote-offer' && state !== 'have-local-pranswer') {
+        result = Promise.reject(
+          new DOMException(
+            `Cannot create answer in signaling state '${state}'`,
+            'InvalidStateError',
+          ),
+        );
+      } else {
         this.#localAnswer = createDeferredDescription();
         try {
           this.#peerConnection.setLocalDescription('answer');
         } catch (err) {
           this.#localAnswer.reject(err);
         }
-      } else if (!this.#localAnswer.settled && this.signalingState === 'have-remote-offer') {
+        result = this.#localAnswer.promise;
+      }
+    } else {
+      if (
+        !this.#localAnswer.settled &&
+        (state === 'have-remote-offer' || state === 'have-local-pranswer')
+      ) {
         try {
           this.#peerConnection.setLocalDescription('answer');
         } catch (err) {
@@ -448,11 +489,7 @@ export default class RTCPeerConnection extends EventTarget implements globalThis
     const dataChannel = new RTCDataChannel(channel, opts);
 
     // ensure we can close all channels when shutting down
-    this.#dataChannels.add(dataChannel);
-    dataChannel.addEventListener('close', () => {
-      this.#dataChannels.delete(dataChannel);
-      this.#dataChannelsClosed++;
-    });
+    this.#trackDataChannel(dataChannel);
 
     if (!this.#announceNegotiation) {
       this.#announceNegotiation = true;
@@ -475,8 +512,21 @@ export default class RTCPeerConnection extends EventTarget implements globalThis
     failureCallback?: globalThis.RTCPeerConnectionErrorCallback,
   ): Promise<globalThis.RTCSessionDescriptionInit> | Promise<void> {
     let result: Promise<globalThis.RTCSessionDescriptionInit>;
-    if (this.connectionState === 'closed' || this.signalingState === 'closed') {
+    const state = this.signalingState;
+    if (this.connectionState === 'closed' || state === 'closed') {
       result = Promise.reject(new DOMException('PeerConnection closed', 'InvalidStateError'));
+    } else if (state === 'have-local-offer') {
+      if (this.#localOfferConsumed) {
+        const current = this.localDescription;
+        result = current ? Promise.resolve(current) : this.#localOffer.promise;
+      } else {
+        this.#localOfferConsumed = true;
+        result = this.#localOffer.promise;
+      }
+    } else if (state !== 'stable') {
+      result = Promise.reject(
+        new DOMException(`Cannot create offer in signaling state '${state}'`, 'InvalidStateError'),
+      );
     } else {
       const hasNegotiableContent =
         this.#dataChannels.size > 0 ||
@@ -491,11 +541,7 @@ export default class RTCPeerConnection extends EventTarget implements globalThis
         } catch (err) {
           this.#localOffer.reject(err);
         }
-      } else if (
-        !this.#localOffer.settled &&
-        this.signalingState === 'stable' &&
-        hasNegotiableContent
-      ) {
+      } else if (!this.#localOffer.settled && hasNegotiableContent) {
         try {
           this.#peerConnection.setLocalDescription('offer');
         } catch (err) {
@@ -598,7 +644,7 @@ export default class RTCPeerConnection extends EventTarget implements globalThis
       id: 'P',
       type: 'peer-connection',
       timestamp: Date.now(),
-      dataChannelsOpened: this.#dataChannels.size,
+      dataChannelsOpened: this.#dataChannelsOpened,
       dataChannelsClosed: this.#dataChannelsClosed,
     });
 
@@ -621,11 +667,14 @@ export default class RTCPeerConnection extends EventTarget implements globalThis
     description?: globalThis.RTCLocalSessionDescriptionInit,
   ): Promise<void> {
     if (!description?.type) {
+      this.#peerConnection.setLocalDescription();
       return;
     }
 
     if (description.type === 'rollback') {
       this.#peerConnection.setLocalDescription('rollback');
+      this.#localOffer = createDeferredDescription();
+      this.#localOfferConsumed = false;
       return;
     }
 
@@ -646,6 +695,11 @@ export default class RTCPeerConnection extends EventTarget implements globalThis
   }
 
   async setRemoteDescription(description: globalThis.RTCSessionDescriptionInit): Promise<void> {
+    if (description.type === 'rollback') {
+      this.#peerConnection.setRemoteDescription(description.sdp ?? '', 'rollback');
+      return;
+    }
+
     if (description.sdp == null) {
       throw new DOMException('Remote SDP must be set');
     }

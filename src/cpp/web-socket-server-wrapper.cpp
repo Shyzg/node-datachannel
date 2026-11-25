@@ -36,6 +36,7 @@ WebSocketServerWrapper::WebSocketServerWrapper(const Napi::CallbackInfo &info)
 
   if (info.Length() == 0 || info[0].IsUndefined())
   {
+    ActiveInstanceGuard guard;
     try
     {
       mWebSocketServerPtr = std::make_unique<rtc::WebSocketServer>();
@@ -48,9 +49,7 @@ WebSocketServerWrapper::WebSocketServerWrapper(const Napi::CallbackInfo &info)
       return;
     }
 
-    mAddonData = getAddonData(env);
-    if (mAddonData && mAddonData->webSocketServers.insert(this).second)
-      ++gActiveNativeInstances;
+    guard.commit(mAddonData, env, &AddonData::webSocketServers, this);
     return;
   }
 
@@ -72,7 +71,7 @@ WebSocketServerWrapper::WebSocketServerWrapper(const Napi::CallbackInfo &info)
   if (auto val = getDefined("port"))
   {
     uint16_t port = 0;
-    if (!parseUint16Port(env, val, "port", port))
+    if (!parseUint16(env, val, "port", port))
       return;
     webSocketServerConfig.port = port;
   }
@@ -87,50 +86,16 @@ WebSocketServerWrapper::WebSocketServerWrapper(const Napi::CallbackInfo &info)
     webSocketServerConfig.enableTls = val.ToBoolean();
   }
 
-  if (auto val = getDefined("certificatePemFile"))
-  {
-    if (!val.IsString())
-    {
-      Napi::TypeError::New(env, "certificatePemFile must be a string").ThrowAsJavaScriptException();
-      return;
-    }
-    webSocketServerConfig.certificatePemFile = val.ToString();
-  }
-
-  if (auto val = getDefined("keyPemFile"))
-  {
-    if (!val.IsString())
-    {
-      Napi::TypeError::New(env, "keyPemFile must be a string").ThrowAsJavaScriptException();
-      return;
-    }
-    webSocketServerConfig.keyPemFile = val.ToString();
-  }
-
-  if (auto val = getDefined("keyPemPass"))
-  {
-    if (!val.IsString())
-    {
-      Napi::TypeError::New(env, "keyPemPass must be a string").ThrowAsJavaScriptException();
-      return;
-    }
-    webSocketServerConfig.keyPemPass = val.ToString();
-  }
-
-  if (auto val = getDefined("bindAddress"))
-  {
-    if (!val.IsString())
-    {
-      Napi::TypeError::New(env, "bindAddress must be a string").ThrowAsJavaScriptException();
-      return;
-    }
-    webSocketServerConfig.bindAddress = val.ToString();
-  }
+  if (!parseOptionalString(env, config, "certificatePemFile", webSocketServerConfig.certificatePemFile) ||
+      !parseOptionalString(env, config, "keyPemFile", webSocketServerConfig.keyPemFile) ||
+      !parseOptionalString(env, config, "keyPemPass", webSocketServerConfig.keyPemPass) ||
+      !parseOptionalString(env, config, "bindAddress", webSocketServerConfig.bindAddress))
+    return;
 
   if (auto val = getDefined("connectionTimeout"))
   {
     int64_t timeoutMs = 0;
-    if (!parseNonNegativeInt64(env, val, "connectionTimeout", timeoutMs))
+    if (!parseNonNegativeDurationMs(env, val, "connectionTimeout", timeoutMs))
       return;
     webSocketServerConfig.connectionTimeout = std::chrono::milliseconds(timeoutMs);
   }
@@ -143,6 +108,7 @@ WebSocketServerWrapper::WebSocketServerWrapper(const Napi::CallbackInfo &info)
     webSocketServerConfig.maxMessageSize = sizeVal;
   }
 
+  ActiveInstanceGuard guard;
   try
   {
     mWebSocketServerPtr = std::make_unique<rtc::WebSocketServer>(webSocketServerConfig);
@@ -154,9 +120,7 @@ WebSocketServerWrapper::WebSocketServerWrapper(const Napi::CallbackInfo &info)
     return;
   }
 
-  mAddonData = getAddonData(env);
-  if (mAddonData && mAddonData->webSocketServers.insert(this).second)
-    ++gActiveNativeInstances;
+  guard.commit(mAddonData, env, &AddonData::webSocketServers, this);
 }
 
 WebSocketServerWrapper::~WebSocketServerWrapper()

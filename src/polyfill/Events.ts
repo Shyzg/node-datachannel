@@ -30,8 +30,6 @@ export class RTCDataChannelEvent extends Event implements globalThis.RTCDataChan
   #channel: RTCDataChannel;
 
   constructor(type = 'datachannel', eventInitDict?: globalThis.RTCDataChannelEventInit) {
-    super(type);
-
     if (eventInitDict === undefined)
       throw new TypeError(
         "Failed to construct 'RTCDataChannelEvent': 2 arguments required, but only 1 present.",
@@ -49,6 +47,7 @@ export class RTCDataChannelEvent extends Event implements globalThis.RTCDataChan
         "Failed to construct 'RTCDataChannelEvent': Failed to read the 'channel' property from 'RTCDataChannelEventInit': Failed to convert value to 'RTCDataChannel'.",
       );
 
+    super(type || 'datachannel', eventInitDict);
     this.#channel = eventInitDict.channel;
   }
 
@@ -76,7 +75,7 @@ export class RTCErrorEvent extends Event implements globalThis.RTCErrorEvent {
       throw new TypeError(
         "Failed to construct 'RTCErrorEvent': Failed to read the 'error' property from 'RTCErrorEventInit': Failed to convert value to 'RTCError'.",
       );
-    super(type || 'error');
+    super(type || 'error', init);
     this.#error = init.error;
   }
 
