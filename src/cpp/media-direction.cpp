@@ -1,6 +1,6 @@
 #include "media-direction.h"
 
-rtc::Description::Direction strToDirection(const std::string &dirAsStr)
+std::optional<rtc::Description::Direction> strToDirection(const std::string &dirAsStr)
 {
   if (dirAsStr == "SendOnly")
     return rtc::Description::Direction::SendOnly;
@@ -10,7 +10,9 @@ rtc::Description::Direction strToDirection(const std::string &dirAsStr)
     return rtc::Description::Direction::RecvOnly;
   if (dirAsStr == "Inactive")
     return rtc::Description::Direction::Inactive;
-  return rtc::Description::Direction::Unknown;
+  if (dirAsStr == "Unknown")
+    return rtc::Description::Direction::Unknown;
+  return std::nullopt;
 }
 
 std::string directionToStr(rtc::Description::Direction dir)

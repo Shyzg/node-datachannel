@@ -8,11 +8,11 @@
 std::shared_ptr<rtc::MediaHandler> asMediaHandler(const Napi::Object &val)
 {
   if (auto *p = unwrapChecked<AV1RtpPacketizerWrapper>(val, &kAV1RtpPacketizerTypeTag))
-    return p->getPacketizerInstance();
+    return p->getHandlerInstance();
   if (auto *p = unwrapChecked<H264RtpPacketizerWrapper>(val, &kH264RtpPacketizerTypeTag))
-    return p->getPacketizerInstance();
+    return p->getHandlerInstance();
   if (auto *p = unwrapChecked<H265RtpPacketizerWrapper>(val, &kH265RtpPacketizerTypeTag))
-    return p->getPacketizerInstance();
+    return p->getHandlerInstance();
   if (auto *p = unwrapChecked<PacingHandlerWrapper>(val, &kPacingHandlerTypeTag))
     return p->getHandlerInstance();
   if (auto *p = unwrapChecked<RtcpNackResponderWrapper>(val, &kRtcpNackResponderTypeTag))
@@ -22,7 +22,7 @@ std::shared_ptr<rtc::MediaHandler> asMediaHandler(const Napi::Object &val)
   if (auto *p = unwrapChecked<RtcpSrReporterWrapper>(val, &kRtcpSrReporterTypeTag))
     return p->getHandlerInstance();
   if (auto *p = unwrapChecked<RtpPacketizerWrapper>(val, &kRtpPacketizerTypeTag))
-    return p->getPacketizerInstance();
+    return p->getHandlerInstance();
   return nullptr;
 }
 

@@ -45,8 +45,8 @@ RtpPacketizationConfigWrapper::RtpPacketizationConfigWrapper(const Napi::Callbac
   }
   std::string cname = info[1].As<Napi::String>().Utf8Value();
 
-  uint8_t payloadType = 0;
-  if (!parseUint8(env, info[2], "payloadType", payloadType))
+  int payloadType = 0;
+  if (!parsePayloadType(env, info[2], "payloadType", payloadType))
     return;
 
   uint32_t clockRate = 0;
@@ -59,7 +59,8 @@ RtpPacketizationConfigWrapper::RtpPacketizationConfigWrapper(const Napi::Callbac
     if (!parseUint8(env, info[4], "videoOrientationId", videoOrientationId))
       return;
   }
-  mConfigPtr = std::make_shared<rtc::RtpPacketizationConfig>(ssrc, cname, payloadType, clockRate, videoOrientationId);
+  mConfigPtr = std::make_shared<rtc::RtpPacketizationConfig>(ssrc, cname, static_cast<uint8_t>(payloadType), clockRate,
+                                                             videoOrientationId);
   info.This().As<Napi::Object>().TypeTag(&kRtpPacketizationConfigTypeTag);
 }
 

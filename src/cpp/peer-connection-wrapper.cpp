@@ -239,16 +239,12 @@ bool parsePeerConnectionConfig(Napi::Env env, const Napi::Object &config, rtc::C
     rtcConfig.portRangeEnd = port;
   }
 
-  if (config.Get("enableIceTcp").IsBoolean())
-    rtcConfig.enableIceTcp = config.Get("enableIceTcp").As<Napi::Boolean>();
-  if (config.Get("enableIceUdpMux").IsBoolean())
-    rtcConfig.enableIceUdpMux = config.Get("enableIceUdpMux").As<Napi::Boolean>();
-  if (config.Get("disableAutoNegotiation").IsBoolean())
-    rtcConfig.disableAutoNegotiation = config.Get("disableAutoNegotiation").As<Napi::Boolean>();
-  if (config.Get("disableAutoGathering").IsBoolean())
-    rtcConfig.disableAutoGathering = config.Get("disableAutoGathering").As<Napi::Boolean>();
-  if (config.Get("forceMediaTransport").IsBoolean())
-    rtcConfig.forceMediaTransport = config.Get("forceMediaTransport").As<Napi::Boolean>();
+  if (!parseOptionalBool(env, config, "enableIceTcp", rtcConfig.enableIceTcp) ||
+      !parseOptionalBool(env, config, "enableIceUdpMux", rtcConfig.enableIceUdpMux) ||
+      !parseOptionalBool(env, config, "disableAutoNegotiation", rtcConfig.disableAutoNegotiation) ||
+      !parseOptionalBool(env, config, "disableAutoGathering", rtcConfig.disableAutoGathering) ||
+      !parseOptionalBool(env, config, "forceMediaTransport", rtcConfig.forceMediaTransport))
+    return false;
 
   if (!config.Get("maxMessageSize").IsUndefined())
   {
@@ -285,8 +281,8 @@ bool parsePeerConnectionConfig(Napi::Env env, const Napi::Object &config, rtc::C
     }
   }
 
-  if (config.Get("disableFingerprintVerification").IsBoolean())
-    rtcConfig.disableFingerprintVerification = config.Get("disableFingerprintVerification").As<Napi::Boolean>();
+  if (!parseOptionalBool(env, config, "disableFingerprintVerification", rtcConfig.disableFingerprintVerification))
+    return false;
   if (!parseOptionalString(env, config, "certificatePemFile", rtcConfig.certificatePemFile))
     return false;
   if (!parseOptionalString(env, config, "keyPemFile", rtcConfig.keyPemFile))

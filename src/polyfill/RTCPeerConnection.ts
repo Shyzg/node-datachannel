@@ -566,7 +566,13 @@ export default class RTCPeerConnection extends EventTarget implements globalThis
   }
 
   getConfiguration(): globalThis.RTCConfiguration {
-    return this.#config;
+    return {
+      ...this.#config,
+      iceServers: this.#config.iceServers?.map((server) => ({
+        ...server,
+        urls: Array.isArray(server.urls) ? [...server.urls] : server.urls,
+      })),
+    };
   }
 
   getReceivers(): globalThis.RTCRtpReceiver[] {

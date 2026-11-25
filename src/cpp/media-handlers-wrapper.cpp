@@ -68,12 +68,10 @@ RtcpReceivingSessionWrapper::RtcpReceivingSessionWrapper(const Napi::CallbackInf
 
 Napi::Object RtcpSrReporterWrapper::Init(Napi::Env env, Napi::Object exports)
 {
-  return MediaHandlerBase::Init(
-      env, exports, "RtcpSrReporter",
-      {InstanceAccessor("rtpConfig", &RtcpSrReporterWrapper::getRtpPacketizationConfig, nullptr)});
+  return RtpConfigHandlerBase::Init(env, exports, "RtcpSrReporter");
 }
 
-RtcpSrReporterWrapper::RtcpSrReporterWrapper(const Napi::CallbackInfo &info) : MediaHandlerBase(info)
+RtcpSrReporterWrapper::RtcpSrReporterWrapper(const Napi::CallbackInfo &info) : RtpConfigHandlerBase(info)
 {
   auto rtpConfig = extractRtpConfig(info.Env(), info[0], mRtpConfigObject);
   if (!rtpConfig)
@@ -81,15 +79,4 @@ RtcpSrReporterWrapper::RtcpSrReporterWrapper(const Napi::CallbackInfo &info) : M
 
   mHandlerPtr = std::make_shared<rtc::RtcpSrReporter>(rtpConfig);
   info.This().As<Napi::Object>().TypeTag(&kRtcpSrReporterTypeTag);
-}
-
-RtcpSrReporterWrapper::~RtcpSrReporterWrapper()
-{
-  mHandlerPtr.reset();
-  mRtpConfigObject.Reset();
-}
-
-Napi::Value RtcpSrReporterWrapper::getRtpPacketizationConfig(const Napi::CallbackInfo &info)
-{
-  return returnRtpConfig(info, mHandlerPtr.get(), mRtpConfigObject);
 }

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { after, describe, mock, test } from 'node:test';
@@ -446,6 +447,76 @@ describe('Websocket', { timeout: 30_000 }, () => {
       }
     } finally {
       srv.stop();
+    }
+  });
+
+  test('force-closes connecting sockets immediately without stalling and validates boolean options', async () => {
+    assert.throws(
+      () =>
+        new nodeDataChannel.WebSocket({
+          disableTlsVerification: 'true' as unknown as boolean,
+        }),
+      TypeError,
+    );
+    assert.throws(
+      () =>
+        new nodeDataChannel.WebSocketServer({
+          enableTls: 'true' as unknown as boolean,
+        }),
+      TypeError,
+    );
+
+    // 1. Client ws.close() while TCP is connected but server never responds HTTP 101
+    const silentSockets: net.Socket[] = [];
+    const tcpAccepted = Promise.withResolvers<void>();
+    const silentServer = net.createServer((sock) => {
+      silentSockets.push(sock);
+      tcpAccepted.resolve();
+    });
+    await new Promise<void>((resolve) => silentServer.listen(0, '127.0.0.1', resolve));
+    const silentAddr = silentServer.address() as net.AddressInfo;
+
+    const connectingWs = new nodeDataChannel.WebSocket();
+    const clientClosed = Promise.withResolvers<void>();
+    connectingWs.onClosed(() => clientClosed.resolve());
+    try {
+      connectingWs.open(`ws://127.0.0.1:${silentAddr.port}`);
+      await tcpAccepted.promise;
+      const t0 = Date.now();
+      connectingWs.close();
+      await clientClosed.promise;
+      assert.ok(Date.now() - t0 < 2000, 'closing a connecting WebSocket should not stall');
+    } finally {
+      connectingWs.forceClose();
+      for (const s of silentSockets) s.destroy();
+      await new Promise<void>((resolve) => silentServer.close(() => resolve()));
+    }
+
+    // 2. WebSocketServer.stop() while a raw TCP (slowloris) client never sends HTTP Upgrade
+    const wsServer = new nodeDataChannel.WebSocketServer({
+      bindAddress: '127.0.0.1',
+      port: 0,
+    });
+    const acceptedClient = Promise.withResolvers<nodeDataChannel.WebSocket>();
+    const acceptedClosed = Promise.withResolvers<void>();
+    wsServer.onClient((accepted) => {
+      accepted.onClosed(() => acceptedClosed.resolve());
+      acceptedClient.resolve(accepted);
+    });
+
+    const slowloris = net.createConnection({ host: '127.0.0.1', port: wsServer.port() });
+    try {
+      await acceptedClient.promise;
+      const t0 = Date.now();
+      wsServer.stop();
+      await acceptedClosed.promise;
+      assert.ok(
+        Date.now() - t0 < 2000,
+        'stopping a server with a connecting client should not stall',
+      );
+    } finally {
+      slowloris.destroy();
+      wsServer.stop();
     }
   });
 });

@@ -80,15 +80,8 @@ WebSocketWrapper::WebSocketWrapper(const Napi::CallbackInfo &info) : ChannelWrap
     return val.IsUndefined() ? Napi::Value() : val;
   };
 
-  if (auto val = getDefined("disableTlsVerification"))
-  {
-    if (!val.IsBoolean())
-    {
-      Napi::TypeError::New(env, "disableTlsVerification must be boolean").ThrowAsJavaScriptException();
-      return;
-    }
-    webSocketConfig.disableTlsVerification = val.ToBoolean();
-  }
+  if (!parseOptionalBool(env, config, "disableTlsVerification", webSocketConfig.disableTlsVerification))
+    return;
 
   if (auto val = getDefined("proxyServer"))
   {
@@ -224,6 +217,19 @@ void WebSocketWrapper::open(const Napi::CallbackInfo &info)
     Napi::Error::New(env, std::string("libdatachannel error while opening WebSocket: ") + ex.what())
         .ThrowAsJavaScriptException();
   }
+}
+
+void WebSocketWrapper::doClose(bool fromDestructor, bool forceReset)
+{
+  // libdatachannel's WebSocket::close() stalls in State::Closing when WsTransport is still Connecting
+  // (no HTTP 101 yet); force-close so connecting clients/servers never wedge or leak handles.
+  if (!fromDestructor && mChannelPtr && mChannelPtr->readyState() == rtc::WebSocket::State::Connecting)
+  {
+    doCloseWith([](rtc::WebSocket &ws) { ws.forceClose(); }, "force closing", /*fromDestructor=*/false,
+                /*forceReset=*/true);
+    return;
+  }
+  ChannelWrapperBase::doClose(fromDestructor, forceReset);
 }
 
 void WebSocketWrapper::forceClose(const Napi::CallbackInfo &)

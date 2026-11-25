@@ -51,7 +51,15 @@ public:
       return;
     }
 
-    mMediaPtr->setDirection(strToDirection(info[0].As<Napi::String>().ToString()));
+    auto dirOpt = strToDirection(info[0].As<Napi::String>().ToString());
+    if (!dirOpt.has_value())
+    {
+      Napi::TypeError::New(
+          env, "Unknown direction, expected \"SendOnly\", \"RecvOnly\", \"SendRecv\", \"Inactive\", or \"Unknown\"")
+          .ThrowAsJavaScriptException();
+      return;
+    }
+    mMediaPtr->setDirection(*dirOpt);
   }
 
   Napi::Value description(const Napi::CallbackInfo &info)
@@ -266,7 +274,15 @@ protected:
         Napi::TypeError::New(env, "direction (String) expected").ThrowAsJavaScriptException();
         return false;
       }
-      defaultDir = strToDirection(info[1].As<Napi::String>().ToString());
+      auto dirOpt = strToDirection(info[1].As<Napi::String>().ToString());
+      if (!dirOpt.has_value())
+      {
+        Napi::TypeError::New(
+            env, "Unknown direction, expected \"SendOnly\", \"RecvOnly\", \"SendRecv\", \"Inactive\", or \"Unknown\"")
+            .ThrowAsJavaScriptException();
+        return false;
+      }
+      defaultDir = *dirOpt;
     }
 
     mMediaPtr = std::make_unique<RtcMedia>(defaultMid, defaultDir);

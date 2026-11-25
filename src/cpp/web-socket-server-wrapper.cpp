@@ -76,15 +76,8 @@ WebSocketServerWrapper::WebSocketServerWrapper(const Napi::CallbackInfo &info)
     webSocketServerConfig.port = port;
   }
 
-  if (auto val = getDefined("enableTls"))
-  {
-    if (!val.IsBoolean())
-    {
-      Napi::TypeError::New(env, "enableTls must be boolean").ThrowAsJavaScriptException();
-      return;
-    }
-    webSocketServerConfig.enableTls = val.ToBoolean();
-  }
+  if (!parseOptionalBool(env, config, "enableTls", webSocketServerConfig.enableTls))
+    return;
 
   if (!parseOptionalString(env, config, "certificatePemFile", webSocketServerConfig.certificatePemFile) ||
       !parseOptionalString(env, config, "keyPemFile", webSocketServerConfig.keyPemFile) ||
@@ -133,7 +126,9 @@ void WebSocketServerWrapper::doStop(bool fromDestructor)
 {
   PLOG_DEBUG << "doStop() called";
   mAlive->store(false);
+  ++mOnClientGen;
   resetCallback(mOnClientCallback);
+  resetFuncRef(mOnClientFn, fromDestructor);
 
   if (mWebSocketServerPtr)
   {
@@ -194,23 +189,27 @@ void WebSocketServerWrapper::onClient(const Napi::CallbackInfo &info)
   }
 
   mSelfRef.acquire(this);
-  auto cb = std::make_shared<ThreadSafeCallback>(info[0].As<Napi::Function>());
-  resetCallback(mOnClientCallback);
-  mOnClientCallback = cb;
+  if (!mOnClientCallback)
+    mOnClientCallback = std::make_shared<ThreadSafeCallback>(env, /*unref=*/false);
+  auto cb = mOnClientCallback;
+  mOnClientFn = Napi::Persistent(info[0].As<Napi::Function>());
+  uint64_t gen = ++mOnClientGen;
 
   mWebSocketServerPtr->onClient(
-      [alive = mAlive, cb = std::move(cb)](std::shared_ptr<rtc::WebSocket> ws)
+      [this, alive = mAlive, cb = std::move(cb), gen](std::shared_ptr<rtc::WebSocket> ws)
       {
-        cb->call(
-            [alive, ws = std::move(ws)](Napi::Env env, std::vector<napi_value> &args) mutable
+        if (!alive->load())
+          return;
+        cb->dispatch(
+            [this, alive, gen, ws = std::move(ws)](Napi::Env cbEnv) mutable
             {
-              if (!alive->load())
+              if (!alive->load() || mOnClientGen != gen || mOnClientFn.IsEmpty())
                 throw ThreadSafeCallback::CancelException();
 
-              auto *data = getAddonData(env);
+              auto *data = getAddonData(cbEnv);
               auto instance = data->webSocketCtor.New(
-                  {Napi::Boolean::New(env, false), Napi::External<std::shared_ptr<rtc::WebSocket>>::New(env, &ws)});
-              args = {instance};
+                  {Napi::Boolean::New(cbEnv, false), Napi::External<std::shared_ptr<rtc::WebSocket>>::New(cbEnv, &ws)});
+              mOnClientFn.Call({instance});
             });
       });
 }

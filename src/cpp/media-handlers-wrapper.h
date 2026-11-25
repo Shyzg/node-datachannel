@@ -37,6 +37,34 @@ protected:
   std::shared_ptr<RtcHandler> mHandlerPtr = nullptr;
 };
 
+template <typename Derived, typename RtcHandler>
+class RtpConfigHandlerBase : public MediaHandlerBase<Derived, RtcHandler>
+{
+public:
+  static Napi::Object Init(Napi::Env env, Napi::Object exports, const char *name)
+  {
+    return MediaHandlerBase<Derived, RtcHandler>::Init(
+        env, exports, name,
+        {Derived::InstanceAccessor("rtpConfig", &RtpConfigHandlerBase::getRtpPacketizationConfig, nullptr)});
+  }
+
+  explicit RtpConfigHandlerBase(const Napi::CallbackInfo &info) : MediaHandlerBase<Derived, RtcHandler>(info) {}
+
+  ~RtpConfigHandlerBase()
+  {
+    this->mHandlerPtr.reset();
+    mRtpConfigObject.Reset();
+  }
+
+  Napi::Value getRtpPacketizationConfig(const Napi::CallbackInfo &info)
+  {
+    return returnRtpConfig(info, this->mHandlerPtr.get(), mRtpConfigObject);
+  }
+
+protected:
+  Napi::ObjectReference mRtpConfigObject;
+};
+
 class PacingHandlerWrapper : public MediaHandlerBase<PacingHandlerWrapper, rtc::PacingHandler>
 {
 public:
@@ -58,17 +86,11 @@ public:
   explicit RtcpReceivingSessionWrapper(const Napi::CallbackInfo &info);
 };
 
-class RtcpSrReporterWrapper : public MediaHandlerBase<RtcpSrReporterWrapper, rtc::RtcpSrReporter>
+class RtcpSrReporterWrapper : public RtpConfigHandlerBase<RtcpSrReporterWrapper, rtc::RtcpSrReporter>
 {
 public:
   static Napi::Object Init(Napi::Env env, Napi::Object exports);
   explicit RtcpSrReporterWrapper(const Napi::CallbackInfo &info);
-  ~RtcpSrReporterWrapper();
-
-  Napi::Value getRtpPacketizationConfig(const Napi::CallbackInfo &info);
-
-private:
-  Napi::ObjectReference mRtpConfigObject;
 };
 
 #endif // MEDIA_HANDLERS_WRAPPER_H

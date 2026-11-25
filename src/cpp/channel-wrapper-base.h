@@ -42,7 +42,10 @@ public:
 
   explicit ChannelWrapperBase(const Napi::CallbackInfo &info) : Napi::ObjectWrap<Derived>(info) {}
 
-  void close(const Napi::CallbackInfo &) { doClose(/*fromDestructor=*/false, /*forceReset=*/!GracefulClose); }
+  void close(const Napi::CallbackInfo &)
+  {
+    static_cast<Derived *>(this)->doClose(/*fromDestructor=*/false, /*forceReset=*/!GracefulClose);
+  }
 
   Napi::Value sendMessage(const Napi::CallbackInfo &info)
   {

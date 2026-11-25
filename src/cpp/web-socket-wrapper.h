@@ -16,6 +16,7 @@ public:
 
   void open(const Napi::CallbackInfo &info);
   void forceClose(const Napi::CallbackInfo &info);
+  void doClose(bool fromDestructor = false, bool forceReset = true);
   Napi::Value remoteAddress(const Napi::CallbackInfo &info);
   Napi::Value path(const Napi::CallbackInfo &info);
 

@@ -399,8 +399,10 @@ describe('Media wrappers and native safety', () => {
     h3.addToChain(h2);
     assert.throws(() => h1.addToChain(h3), /cycle/i);
 
-    assert.throws(() => new ndc.RtpPacketizationConfig(1, 'c', 256, 90000), /0 and 255/);
-    assert.throws(() => new ndc.RtpPacketizationConfig(1, 'c', -1, 90000), /0 and 255/);
+    assert.throws(() => new ndc.RtpPacketizationConfig(1, 'c', 128, 90000), /0 and 127/);
+    assert.throws(() => new ndc.RtpPacketizationConfig(1, 'c', 200, 90000), /0 and 127/);
+    assert.throws(() => new ndc.RtpPacketizationConfig(1, 'c', 256, 90000), /0 and 127/);
+    assert.throws(() => new ndc.RtpPacketizationConfig(1, 'c', -1, 90000), /0 and 127/);
     assert.throws(() => {
       cfg.playoutDelayId = -1;
     }, /0 and 255/);
@@ -420,9 +422,25 @@ describe('Media wrappers and native safety', () => {
     assert.throws(() => badMedia.addH264Codec(Number.NaN), /between 0 and 127/);
     assert.throws(() => badMedia.addRTXCodec(-5, 96, 90000), /between 0 and 127/);
     assert.throws(() => badMedia.addRTXCodec(97, 200, 90000), /between 0 and 127/);
+    assert.throws(
+      () => new ndc.Video('v', 'sendonly' as unknown as ndc.Direction),
+      /Unknown direction/,
+    );
+    assert.throws(
+      () => badMedia.setDirection('invalid' as unknown as ndc.Direction),
+      /Unknown direction/,
+    );
     const badAudio = new ndc.Audio('a', 'SendOnly');
     assert.throws(() => badAudio.addOpusCodec(-1), /between 0 and 127/);
     assert.throws(() => badAudio.addAudioCodec(128, 'opus'), /between 0 and 127/);
+    assert.throws(
+      () => new ndc.Audio('a', 'bogus' as unknown as ndc.Direction),
+      /Unknown direction/,
+    );
+    assert.throws(
+      () => badAudio.setDirection('recvonly' as unknown as ndc.Direction),
+      /Unknown direction/,
+    );
 
     assert.throws(
       () =>
@@ -430,6 +448,54 @@ describe('Media wrappers and native safety', () => {
           iceServers: [{ hostname: 'turn.example.com', port: 3478, username: 'u', password: 'p' }],
         }),
       /relayType/,
+    );
+    assert.throws(
+      () =>
+        new ndc.PeerConnection('BadBool1', {
+          iceServers: [],
+          enableIceTcp: 'yes' as unknown as boolean,
+        }),
+      TypeError,
+    );
+    assert.throws(
+      () =>
+        new ndc.PeerConnection('BadBool2', {
+          iceServers: [],
+          enableIceUdpMux: 1 as unknown as boolean,
+        }),
+      TypeError,
+    );
+    assert.throws(
+      () =>
+        new ndc.PeerConnection('BadBool3', {
+          iceServers: [],
+          disableAutoNegotiation: 'false' as unknown as boolean,
+        }),
+      TypeError,
+    );
+    assert.throws(
+      () =>
+        new ndc.PeerConnection('BadBool4', {
+          iceServers: [],
+          disableAutoGathering: 0 as unknown as boolean,
+        }),
+      TypeError,
+    );
+    assert.throws(
+      () =>
+        new ndc.PeerConnection('BadBool5', {
+          iceServers: [],
+          forceMediaTransport: {} as unknown as boolean,
+        }),
+      TypeError,
+    );
+    assert.throws(
+      () =>
+        new ndc.PeerConnection('BadBool6', {
+          iceServers: [],
+          disableFingerprintVerification: 'true' as unknown as boolean,
+        }),
+      TypeError,
     );
   });
 
