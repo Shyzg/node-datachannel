@@ -1,0 +1,54 @@
+# Dependencies
+node_modules/
+
+# Build & TypeScript output
+dist/
+build/
+*.tsbuildinfo
+
+# Native C++ / CMake / vcpkg artifacts
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+compile_commands.json
+Makefile
+*.cmake
+!CMakeLists.txt
+*.node
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.dylib
+*.dll
+vcpkg/
+vcpkg_installed/
+
+# Tests, coverage & caches
+coverage/
+.cache/
+tmp/
+
+# Logs & packages
+*.log
+npm-debug.log*
+pnpm-debug.log*
+*.tgz
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Editors & OS
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+.idea/
+.vscode/*
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json

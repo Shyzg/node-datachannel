@@ -1,0 +1,252 @@
+#include "web-socket-server-wrapper.h"
+#include "web-socket-wrapper.h"
+
+#include "plog/Log.h"
+
+#include <iostream>
+
+void WebSocketServerWrapper::StopAll(AddonData *data)
+{
+  if (!data)
+    return;
+  PLOG_DEBUG << "StopAll() called";
+  auto copy = data->webSocketServers;
+  for (auto *inst : copy)
+    inst->doStop();
+}
+
+Napi::Object WebSocketServerWrapper::Init(Napi::Env env, Napi::Object exports)
+{
+  Napi::HandleScope scope(env);
+
+  Napi::Function func = DefineClass(env, "WebSocketServer",
+                                    {InstanceMethod("stop", &WebSocketServerWrapper::stop),
+                                     InstanceMethod("port", &WebSocketServerWrapper::port),
+                                     InstanceMethod("onClient", &WebSocketServerWrapper::onClient)});
+
+  exports.Set("WebSocketServer", func);
+  return exports;
+}
+
+WebSocketServerWrapper::WebSocketServerWrapper(const Napi::CallbackInfo &info)
+    : Napi::ObjectWrap<WebSocketServerWrapper>(info)
+{
+  PLOG_DEBUG << "Constructor called";
+  Napi::Env env = info.Env();
+
+  if (info.Length() == 0 || info[0].IsUndefined())
+  {
+    try
+    {
+      mWebSocketServerPtr = std::make_unique<rtc::WebSocketServer>();
+    }
+    catch (std::exception &ex)
+    {
+      Napi::Error::New(env,
+                       std::string("libdatachannel error while creating WebSocketServer without config: ") + ex.what())
+          .ThrowAsJavaScriptException();
+      return;
+    }
+
+    mAddonData = getAddonData(env);
+    if (mAddonData && mAddonData->webSocketServers.insert(this).second)
+      ++gActiveNativeInstances;
+    return;
+  }
+
+  if (!info[0].IsObject())
+  {
+    Napi::TypeError::New(env, "Configuration (Object) expected").ThrowAsJavaScriptException();
+    return;
+  }
+
+  Napi::Object config = info[0].As<Napi::Object>();
+  rtc::WebSocketServerConfiguration webSocketServerConfig;
+
+  auto getDefined = [&](const char *key) -> Napi::Value
+  {
+    Napi::Value val = config.Get(key);
+    return val.IsUndefined() ? Napi::Value() : val;
+  };
+
+  if (auto val = getDefined("port"))
+  {
+    uint16_t port = 0;
+    if (!parseUint16Port(env, val, "port", port))
+      return;
+    webSocketServerConfig.port = port;
+  }
+
+  if (auto val = getDefined("enableTls"))
+  {
+    if (!val.IsBoolean())
+    {
+      Napi::TypeError::New(env, "enableTls must be boolean").ThrowAsJavaScriptException();
+      return;
+    }
+    webSocketServerConfig.enableTls = val.ToBoolean();
+  }
+
+  if (auto val = getDefined("certificatePemFile"))
+  {
+    if (!val.IsString())
+    {
+      Napi::TypeError::New(env, "certificatePemFile must be a string").ThrowAsJavaScriptException();
+      return;
+    }
+    webSocketServerConfig.certificatePemFile = val.ToString();
+  }
+
+  if (auto val = getDefined("keyPemFile"))
+  {
+    if (!val.IsString())
+    {
+      Napi::TypeError::New(env, "keyPemFile must be a string").ThrowAsJavaScriptException();
+      return;
+    }
+    webSocketServerConfig.keyPemFile = val.ToString();
+  }
+
+  if (auto val = getDefined("keyPemPass"))
+  {
+    if (!val.IsString())
+    {
+      Napi::TypeError::New(env, "keyPemPass must be a string").ThrowAsJavaScriptException();
+      return;
+    }
+    webSocketServerConfig.keyPemPass = val.ToString();
+  }
+
+  if (auto val = getDefined("bindAddress"))
+  {
+    if (!val.IsString())
+    {
+      Napi::TypeError::New(env, "bindAddress must be a string").ThrowAsJavaScriptException();
+      return;
+    }
+    webSocketServerConfig.bindAddress = val.ToString();
+  }
+
+  if (auto val = getDefined("connectionTimeout"))
+  {
+    int64_t timeoutMs = 0;
+    if (!parseNonNegativeInt64(env, val, "connectionTimeout", timeoutMs))
+      return;
+    webSocketServerConfig.connectionTimeout = std::chrono::milliseconds(timeoutMs);
+  }
+
+  if (auto val = getDefined("maxMessageSize"))
+  {
+    size_t sizeVal = 0;
+    if (!parsePositiveSize(env, val, "maxMessageSize", sizeVal))
+      return;
+    webSocketServerConfig.maxMessageSize = sizeVal;
+  }
+
+  try
+  {
+    mWebSocketServerPtr = std::make_unique<rtc::WebSocketServer>(webSocketServerConfig);
+  }
+  catch (std::exception &ex)
+  {
+    Napi::Error::New(env, std::string("libdatachannel error while creating WebSocketServer: ") + ex.what())
+        .ThrowAsJavaScriptException();
+    return;
+  }
+
+  mAddonData = getAddonData(env);
+  if (mAddonData && mAddonData->webSocketServers.insert(this).second)
+    ++gActiveNativeInstances;
+}
+
+WebSocketServerWrapper::~WebSocketServerWrapper()
+{
+  PLOG_DEBUG << "Destructor called";
+  doStop(/*fromDestructor=*/true);
+}
+
+void WebSocketServerWrapper::doStop(bool fromDestructor)
+{
+  PLOG_DEBUG << "doStop() called";
+  mAlive->store(false);
+  resetCallback(mOnClientCallback);
+
+  if (mWebSocketServerPtr)
+  {
+    try
+    {
+      mWebSocketServerPtr->onClient(nullptr);
+      mWebSocketServerPtr->stop();
+    }
+    catch (std::exception &ex)
+    {
+      std::cerr << std::string("libdatachannel error while closing WebSocketServer: ") + ex.what() << std::endl;
+    }
+    mWebSocketServerPtr.reset();
+  }
+
+  if (mAddonData)
+  {
+    if (mAddonData->webSocketServers.erase(this) > 0)
+      --gActiveNativeInstances;
+    mAddonData = nullptr;
+  }
+
+  mSelfRef.release(this, fromDestructor);
+}
+
+void WebSocketServerWrapper::stop(const Napi::CallbackInfo &) { doStop(); }
+
+Napi::Value WebSocketServerWrapper::port(const Napi::CallbackInfo &info)
+{
+  Napi::Env env = info.Env();
+  if (!mWebSocketServerPtr)
+    return Napi::Number::New(env, 0);
+
+  try
+  {
+    return Napi::Number::New(env, mWebSocketServerPtr->port());
+  }
+  catch (std::exception &ex)
+  {
+    Napi::Error::New(env, std::string("WebSocketServer error: ") + ex.what()).ThrowAsJavaScriptException();
+    return Napi::Number::New(env, 0);
+  }
+}
+
+void WebSocketServerWrapper::onClient(const Napi::CallbackInfo &info)
+{
+  Napi::Env env = info.Env();
+  if (!mWebSocketServerPtr)
+  {
+    Napi::Error::New(env, "onClient() called on destroyed WebSocketServer").ThrowAsJavaScriptException();
+    return;
+  }
+
+  if (info.Length() < 1 || !info[0].IsFunction())
+  {
+    Napi::TypeError::New(env, "Function expected as onClient callback").ThrowAsJavaScriptException();
+    return;
+  }
+
+  mSelfRef.acquire(this);
+  auto cb = std::make_shared<ThreadSafeCallback>(info[0].As<Napi::Function>());
+  resetCallback(mOnClientCallback);
+  mOnClientCallback = cb;
+
+  mWebSocketServerPtr->onClient(
+      [alive = mAlive, cb = std::move(cb)](std::shared_ptr<rtc::WebSocket> ws)
+      {
+        cb->call(
+            [alive, ws = std::move(ws)](Napi::Env env, std::vector<napi_value> &args) mutable
+            {
+              if (!alive->load())
+                throw ThreadSafeCallback::CancelException();
+
+              auto *data = getAddonData(env);
+              auto instance = data->webSocketCtor.New(
+                  {Napi::Boolean::New(env, false), Napi::External<std::shared_ptr<rtc::WebSocket>>::New(env, &ws)});
+              args = {instance};
+            });
+      });
+}

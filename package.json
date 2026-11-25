@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json.schemastore.org/package.json",
+  "name": "@shyzg/node-datachannel",
+  "version": "1.0.0",
+  "description": "Node.js native bindings for libdatachannel (WebRTC DataChannels, Media Tracks, WebSockets, and WebRTC polyfill)",
+  "license": "Apache-2.0",
+  "author": "Shyzg",
+  "homepage": "https://github.com/Shyzg/node-datachannel#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Shyzg/node-datachannel.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Shyzg/node-datachannel/issues"
+  },
+  "keywords": [
+    "datachannel",
+    "libdatachannel",
+    "webrtc",
+    "p2p",
+    "peer-to-peer",
+    "websocket"
+  ],
+  "type": "module",
+  "main": "./dist/lib/index.js",
+  "types": "./dist/lib/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/lib/index.d.ts",
+      "default": "./dist/lib/index.js"
+    },
+    "./polyfill": {
+      "types": "./dist/polyfill/index.d.ts",
+      "default": "./dist/polyfill/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src/cpp",
+    "CMakeLists.txt"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "packageManager": "pnpm@12.23.0",
+  "scripts": {
+    "install": "cmake-js build",
+    "rebuild": "cmake-js rebuild",
+    "install:nice": "pnpm run clean && cmake-js configure --CDUSE_NICE=1 && cmake-js build",
+    "install:gnu": "pnpm run clean && cmake-js configure --CDUSE_GNUTLS=1 && cmake-js build",
+    "compile": "cmake-js build",
+    "compile:debug": "cmake-js configure -D && cmake-js build -D",
+    "build": "pnpm run compile && pnpm run build:ts",
+    "build:debug": "pnpm run compile:debug && pnpm run build:ts",
+    "build:ts": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\" && tsc -p tsconfig.build.json",
+    "build:ts:watch": "tsc -p tsconfig.build.json --watch",
+    "clean": "node -e \"const fs = require('node:fs'); fs.rmSync('dist', { recursive: true, force: true }); fs.rmSync('build', { recursive: true, force: true })\"",
+    "lint": "biome check .",
+    "format": "biome format --write .",
+    "format:cpp": "find src/cpp \\( -name '*.h' -o -name '*.cpp' \\) -exec clang-format -i {} +",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test \"test/*.test.ts\"",
+    "test:watch": "node --test --watch \"test/*.test.ts\"",
+    "prepack": "pnpm run build:ts",
+    "prepublishOnly": "pnpm run typecheck && pnpm run lint && pnpm test"
+  },
+  "dependencies": {
+    "cmake-js": "^8.0.0",
+    "node-addon-api": "^8.9.2"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.6.8",
+    "@types/node": "^24.19.2",
+    "typescript": "^6.0.3"
+  }
+}
