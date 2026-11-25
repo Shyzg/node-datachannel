@@ -94,12 +94,16 @@ describe('Media wrappers and native safety', () => {
     );
 
     const closeEvents: string[] = [];
+    const pcClosed = Promise.withResolvers<void>();
     pc.onIceStateChange((s) => closeEvents.push(`ice:${s}`));
-    pc.onStateChange((s) => closeEvents.push(`pc:${s}`));
+    pc.onStateChange((s) => {
+      closeEvents.push(`pc:${s}`);
+      if (s === 'closed') pcClosed.resolve();
+    });
     dc.close();
     pc.close();
     assert.equal(pc.rtt(), -1);
-    await new Promise((r) => setTimeout(r, 50));
+    await pcClosed.promise;
     assert.ok(closeEvents.includes('ice:closed'));
     assert.ok(closeEvents.includes('pc:closed'));
   });
@@ -269,6 +273,7 @@ describe('Media wrappers and native safety', () => {
   test('preserves FIFO callback order, handles already-closed channels, reports gathering state, and sends media track packets', async () => {
     const orderEvents: string[] = [];
     const gatheringStates: string[] = [];
+    const gatheringDone = Promise.withResolvers<void>();
     const pcOrder = new ndc.PeerConnection('OrderPeer', { iceServers: [] });
     pcOrder.onLocalCandidate(() => {
       if (!orderEvents.includes('cand')) orderEvents.push('cand');
@@ -276,10 +281,16 @@ describe('Media wrappers and native safety', () => {
     pcOrder.onLocalDescription(() => {
       orderEvents.push('desc');
     });
-    pcOrder.onGatheringStateChange((s) => gatheringStates.push(s));
+    pcOrder.onGatheringStateChange((s) => {
+      gatheringStates.push(s);
+      if (s === 'complete') gatheringDone.resolve();
+    });
     pcOrder.createDataChannel('order-dc');
-    await new Promise((r) => setTimeout(r, 150));
-    pcOrder.close();
+    try {
+      await gatheringDone.promise;
+    } finally {
+      pcOrder.close();
+    }
     assert.equal(orderEvents[0], 'desc');
     assert.ok(gatheringStates.includes('gathering'));
     assert.ok(!gatheringStates.includes('in-progress'));

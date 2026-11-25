@@ -21,6 +21,7 @@ jobs:
   preflight:
     name: Validate release metadata
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       name: ${{ steps.check.outputs.name }}
       version: ${{ steps.check.outputs.version }}
@@ -135,6 +136,7 @@ jobs:
     needs: [preflight, verify]
     if: needs.preflight.outputs.should_run == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: read
       id-token: write
