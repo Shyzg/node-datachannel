@@ -6,7 +6,7 @@ import path from 'node:path';
 import { after, describe, mock, test } from 'node:test';
 import * as nodeDataChannel from '../src/lib/index.ts';
 
-describe('Websocket', () => {
+describe('Websocket', { timeout: 30_000 }, () => {
   after(() => {
     nodeDataChannel.cleanup();
   });
@@ -49,6 +49,10 @@ describe('Websocket', () => {
         serverSocket.close();
       });
 
+      serverSocket.onError((err) => {
+        serverClosed.reject(new Error(`Server WebSocket error: ${err}`));
+      });
+
       serverSocket.onClosed(() => {
         webServerOnClosedMock();
         serverSocket.close();
@@ -56,7 +60,6 @@ describe('Websocket', () => {
       });
     });
 
-    clientSocket.open(`ws://127.0.0.1:${serverPort}`);
     clientSocket.onOpen(() => {
       clientOnOpenMock();
       clientSocket.sendMessage('Hello');
@@ -66,12 +69,23 @@ describe('Websocket', () => {
       clientOnMessageMock(message);
     });
 
+    clientSocket.onError((err) => {
+      clientClosed.reject(new Error(`Client WebSocket error: ${err}`));
+    });
+
     clientSocket.onClosed(() => {
       clientOnClosedMock();
       clientClosed.resolve();
     });
 
-    await Promise.all([serverClosed.promise, clientClosed.promise]);
+    clientSocket.open(`ws://127.0.0.1:${serverPort}`);
+
+    try {
+      await Promise.all([serverClosed.promise, clientClosed.promise]);
+    } finally {
+      clientSocket.close();
+      webSocketServer.stop();
+    }
 
     assert.equal(clientOnMessageMock.mock.calls[0]?.arguments[0], 'reply to Hello');
     assert.equal(clientOnOpenMock.mock.calls.length, 1);
@@ -83,9 +97,6 @@ describe('Websocket', () => {
     assert.equal(webServerOnOpenMock.mock.calls.length, 1);
     assert.equal(webServerOnMessageMock.mock.calls.length, 1);
     assert.equal(webServerOnClosedMock.mock.calls.length, 1);
-
-    clientSocket.close();
-    webSocketServer.stop();
   });
 
   test('validates negative maxMessageSize and cleans up unopened sockets on close', () => {
@@ -134,6 +145,10 @@ describe('Websocket', () => {
     });
 
     const client = new nodeDataChannel.WebSocket();
+    client.onError((err) => {
+      binaryEcho.reject(new Error(`Binary echo client error: ${err}`));
+      clientClosed.reject(new Error(`Binary echo client error: ${err}`));
+    });
     client.onClosed(() => {
       clientClosed.resolve();
     });
@@ -147,12 +162,16 @@ describe('Websocket', () => {
     });
     client.open(`ws://127.0.0.1:${port}`);
 
-    const echoed = await binaryEcho.promise;
-    assert.deepEqual(Array.from(echoed), [10, 20, 30, 40]);
+    try {
+      const echoed = await binaryEcho.promise;
+      assert.deepEqual(Array.from(echoed), [10, 20, 30, 40]);
 
-    server.stop();
-    await clientClosed.promise;
-    client.forceClose();
+      server.stop();
+      await clientClosed.promise;
+    } finally {
+      server.stop();
+      client.forceClose();
+    }
   });
 
   test('recovers after failed open(), validates negative timeouts/protocols, and cleans up queued clients quickly', async () => {
@@ -182,6 +201,10 @@ describe('Websocket', () => {
     const opened = Promise.withResolvers<void>();
     const closed = Promise.withResolvers<void>();
     let closedBeforeOpen = false;
+    ws.onError((err) => {
+      opened.reject(new Error(`WebSocket error: ${err}`));
+      closed.reject(new Error(`WebSocket error: ${err}`));
+    });
     ws.onClosed(() => {
       if (!ws.isOpen()) closedBeforeOpen = true;
       closed.resolve();
@@ -194,9 +217,13 @@ describe('Websocket', () => {
     assert.equal(closedBeforeOpen, false);
 
     ws.open(`ws://127.0.0.1:${port}`);
-    await opened.promise;
-    await closed.promise;
-    server.stop();
+    try {
+      await opened.promise;
+      await closed.promise;
+    } finally {
+      ws.forceClose();
+      server.stop();
+    }
 
     const srv2 = new nodeDataChannel.WebSocketServer({ bindAddress: '127.0.0.1', port: 0 });
     const c2 = new nodeDataChannel.WebSocket();
@@ -286,43 +313,56 @@ describe('Websocket', () => {
         certificatePemFile: certFile,
         keyPemFile: keyFile,
       });
-      srv.onClient((socket) => {
-        socket.onMessage((msg) => socket.sendMessage(`tls:${String(msg)}`));
-      });
-
-      const connectOnce = (opts: nodeDataChannel.WebSocketConfiguration) =>
-        new Promise<string>((resolve, reject) => {
-          const client = new nodeDataChannel.WebSocket(opts);
-          client.onError((err) => {
-            client.forceClose();
-            reject(new Error(err));
-          });
-          client.onOpen(() => client.sendMessage('ping'));
-          client.onMessage((msg) => {
-            client.close();
-            resolve(String(msg));
-          });
-          client.open(`wss://127.0.0.1:${srv.port()}`);
+      try {
+        srv.onClient((socket) => {
+          socket.onMessage((msg) => socket.sendMessage(`tls:${String(msg)}`));
         });
 
-      if (process.platform === 'win32') {
-        assert.throws(
-          () => new nodeDataChannel.WebSocket({ caCertificatePemFile: certFile }),
-          /not supported on Windows/i,
-        );
-        const strictClient = new nodeDataChannel.WebSocket();
-        assert.throws(
-          () => strictClient.open(`wss://127.0.0.1:${srv.port()}`),
-          /not supported on Windows/i,
-        );
-        strictClient.close();
-        assert.equal(await connectOnce({ disableTlsVerification: true }), 'tls:ping');
-      } else {
-        assert.equal(await connectOnce({ caCertificatePemFile: certFile }), 'tls:ping');
-        assert.equal(await connectOnce({ disableTlsVerification: true }), 'tls:ping');
-        await assert.rejects(() => connectOnce({}), /TLS/i);
+        const connectOnce = (opts: nodeDataChannel.WebSocketConfiguration) =>
+          new Promise<string>((resolve, reject) => {
+            let settled = false;
+            const settle = (fn: () => void): void => {
+              if (settled) return;
+              settled = true;
+              fn();
+            };
+
+            const client = new nodeDataChannel.WebSocket(opts);
+            client.onError((err) => {
+              client.forceClose();
+              settle(() => reject(new Error(err)));
+            });
+            client.onClosed(() => {
+              settle(() => reject(new Error('TLS WebSocket closed before receiving reply')));
+            });
+            client.onOpen(() => client.sendMessage('ping'));
+            client.onMessage((msg) => {
+              client.close();
+              settle(() => resolve(String(msg)));
+            });
+            client.open(`wss://127.0.0.1:${srv.port()}`);
+          });
+
+        if (process.platform === 'win32') {
+          assert.throws(
+            () => new nodeDataChannel.WebSocket({ caCertificatePemFile: certFile }),
+            /not supported on Windows/i,
+          );
+          const strictClient = new nodeDataChannel.WebSocket();
+          assert.throws(
+            () => strictClient.open(`wss://127.0.0.1:${srv.port()}`),
+            /not supported on Windows/i,
+          );
+          strictClient.close();
+          assert.equal(await connectOnce({ disableTlsVerification: true }), 'tls:ping');
+        } else {
+          assert.equal(await connectOnce({ caCertificatePemFile: certFile }), 'tls:ping');
+          assert.equal(await connectOnce({ disableTlsVerification: true }), 'tls:ping');
+          await assert.rejects(() => connectOnce({}), /TLS/i);
+        }
+      } finally {
+        srv.stop();
       }
-      srv.stop();
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
@@ -345,57 +385,67 @@ describe('Websocket', () => {
     const srv = new nodeDataChannel.WebSocketServer({ bindAddress: '127.0.0.1', port: 0 });
     const port = srv.port();
 
-    // Verify onClient replaces previous handler instead of accumulating listeners
-    let firstHandlerCalls = 0;
-    const acceptedDeferred = Promise.withResolvers<nodeDataChannel.WebSocket>();
-    srv.onClient(() => {
-      firstHandlerCalls++;
-    });
-    srv.onClient((ws) => {
-      acceptedDeferred.resolve(ws);
-    });
-
-    const c1 = new nodeDataChannel.WebSocket();
-    await new Promise<void>((resolve) => {
-      c1.onOpen(resolve);
-      c1.open(`ws://127.0.0.1:${port}`);
-    });
-    const accepted = await acceptedDeferred.promise;
-    await new Promise((r) => setTimeout(r, 20));
-    assert.equal(firstHandlerCalls, 0);
-
-    // Closing a socket with no registered callbacks must release mChannelPtr immediately
-    accepted.close();
-    assert.throws(() => accepted.onOpen(() => {}), /destroyed WebSocket/);
-    c1.forceClose();
-
-    // Pre-close message delivery works regardless of onClosed vs onMessage registration order
-    for (const order of ['onMessage-first', 'onClosed-first'] as const) {
-      const got: string[] = [];
-      const closed = Promise.withResolvers<void>();
+    try {
+      // Verify onClient replaces previous handler instead of accumulating listeners
+      let firstHandlerCalls = 0;
+      const acceptedDeferred = Promise.withResolvers<nodeDataChannel.WebSocket>();
+      srv.onClient(() => {
+        firstHandlerCalls++;
+      });
       srv.onClient((ws) => {
-        setTimeout(() => {
-          if (order === 'onMessage-first') {
-            ws.onMessage((m) => got.push(String(m)));
-            ws.onClosed(() => closed.resolve());
-          } else {
-            ws.onClosed(() => closed.resolve());
-            ws.onMessage((m) => got.push(String(m)));
-          }
-        }, 50);
+        acceptedDeferred.resolve(ws);
       });
 
-      const cli = new nodeDataChannel.WebSocket();
-      cli.onOpen(() => {
-        cli.sendMessage(`payload-${order}`);
-        setTimeout(() => cli.close(), 15);
-      });
-      cli.open(`ws://127.0.0.1:${port}`);
-      await closed.promise;
-      assert.deepEqual(got, [`payload-${order}`]);
-      cli.forceClose();
+      const c1 = new nodeDataChannel.WebSocket();
+      try {
+        await new Promise<void>((resolve, reject) => {
+          c1.onError((err) => reject(new Error(err)));
+          c1.onOpen(resolve);
+          c1.open(`ws://127.0.0.1:${port}`);
+        });
+        const accepted = await acceptedDeferred.promise;
+        await new Promise((r) => setTimeout(r, 20));
+        assert.equal(firstHandlerCalls, 0);
+
+        // Closing a socket with no registered callbacks must release mChannelPtr immediately
+        accepted.close();
+        assert.throws(() => accepted.onOpen(() => {}), /destroyed WebSocket/);
+      } finally {
+        c1.forceClose();
+      }
+
+      // Pre-close message delivery works regardless of onClosed vs onMessage registration order
+      for (const order of ['onMessage-first', 'onClosed-first'] as const) {
+        const got: string[] = [];
+        const closed = Promise.withResolvers<void>();
+        srv.onClient((ws) => {
+          setTimeout(() => {
+            if (order === 'onMessage-first') {
+              ws.onMessage((m) => got.push(String(m)));
+              ws.onClosed(() => closed.resolve());
+            } else {
+              ws.onClosed(() => closed.resolve());
+              ws.onMessage((m) => got.push(String(m)));
+            }
+          }, 50);
+        });
+
+        const cli = new nodeDataChannel.WebSocket();
+        cli.onError((err) => closed.reject(new Error(`Client error (${order}): ${err}`)));
+        cli.onOpen(() => {
+          cli.sendMessage(`payload-${order}`);
+          setTimeout(() => cli.close(), 15);
+        });
+        cli.open(`ws://127.0.0.1:${port}`);
+        try {
+          await closed.promise;
+        } finally {
+          cli.forceClose();
+        }
+        assert.deepEqual(got, [`payload-${order}`]);
+      }
+    } finally {
+      srv.stop();
     }
-
-    srv.stop();
   });
 });

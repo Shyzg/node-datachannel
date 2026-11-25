@@ -62,7 +62,7 @@
     "format": "biome format --write .",
     "format:cpp": "find src/cpp \\( -name '*.h' -o -name '*.cpp' \\) -exec clang-format -i {} +",
     "typecheck": "tsc --noEmit",
-    "test": "node --test \"test/*.test.ts\"",
+    "test": "node --test --test-timeout=30000 \"test/*.test.ts\"",
     "test:watch": "node --test --watch \"test/*.test.ts\"",
     "prepack": "pnpm run build:ts",
     "prepublishOnly": "pnpm run typecheck && pnpm run lint && pnpm test"
