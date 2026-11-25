@@ -208,13 +208,57 @@ describe('Websocket', () => {
     assert.ok(Date.now() - t0 < 3000);
   });
 
-  test('supports TLS (wss://) with CA verification and rejects untrusted certificates', async () => {
+  test('supports TLS (wss://) with CA verification and rejects untrusted certificates', async (t) => {
+    const findOpenSsl = (): string | null => {
+      const candidates =
+        process.platform === 'win32'
+          ? [
+              'openssl',
+              'C:\\Program Files\\Git\\usr\\bin\\openssl.exe',
+              'C:\\vcpkg\\installed\\x64-windows-static\\tools\\openssl\\openssl.exe',
+            ]
+          : ['openssl'];
+      for (const candidate of candidates) {
+        try {
+          execFileSync(candidate, ['version'], { stdio: 'ignore' });
+          return candidate;
+        } catch {
+          // Try next candidate
+        }
+      }
+      return null;
+    };
+
+    const opensslBin = findOpenSsl();
+    if (!opensslBin) {
+      t.skip('openssl CLI not available');
+      return;
+    }
+
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ndc-ws-tls-'));
+    const confFile = path.join(tmpDir, 'openssl.cnf');
     const keyFile = path.join(tmpDir, 'key.pem');
     const certFile = path.join(tmpDir, 'cert.pem');
     try {
+      fs.writeFileSync(
+        confFile,
+        [
+          '[req]',
+          'distinguished_name = dn',
+          'x509_extensions = v3_ext',
+          'prompt = no',
+          '',
+          '[dn]',
+          'CN = 127.0.0.1',
+          '',
+          '[v3_ext]',
+          'subjectAltName = IP:127.0.0.1,DNS:localhost',
+          '',
+        ].join('\n'),
+      );
+
       execFileSync(
-        'openssl',
+        opensslBin,
         [
           'req',
           '-x509',
@@ -229,10 +273,8 @@ describe('Websocket', () => {
           '-days',
           '1',
           '-nodes',
-          '-subj',
-          '/CN=127.0.0.1',
-          '-addext',
-          'subjectAltName=IP:127.0.0.1,DNS:localhost',
+          '-config',
+          confFile,
         ],
         { stdio: 'ignore' },
       );
