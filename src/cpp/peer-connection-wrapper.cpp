@@ -839,17 +839,17 @@ void PeerConnectionWrapper::onLocalDescription(const Napi::CallbackInfo &info)
                [this](auto state, auto queue, uint64_t gen)
                {
                  mRtcPeerConnPtr->onLocalDescription(
-                     [self = this, state, queue, gen](rtc::Description sdp)
+                     [this, state, queue, gen](rtc::Description sdp)
                      {
                        if (!state->alive.load())
                          return;
                        queue->dispatch(
-                           [self, state, gen, sdp = std::move(sdp)](Napi::Env env)
+                           [this, state, gen, sdp = std::move(sdp)](Napi::Env env)
                            {
-                             if (!state->alive.load() || self->mOnLocalDescriptionGen != gen ||
-                                 self->mOnLocalDescriptionFn.IsEmpty())
+                             if (!state->alive.load() || mOnLocalDescriptionGen != gen ||
+                                 mOnLocalDescriptionFn.IsEmpty())
                                throw ThreadSafeCallback::CancelException();
-                             self->mOnLocalDescriptionFn.Call(
+                             mOnLocalDescriptionFn.Call(
                                  {Napi::String::New(env, std::string(sdp)), Napi::String::New(env, sdp.typeString())});
                            });
                      });
@@ -862,17 +862,16 @@ void PeerConnectionWrapper::onLocalCandidate(const Napi::CallbackInfo &info)
                [this](auto state, auto queue, uint64_t gen)
                {
                  mRtcPeerConnPtr->onLocalCandidate(
-                     [self = this, state, queue, gen](rtc::Candidate cand)
+                     [this, state, queue, gen](rtc::Candidate cand)
                      {
                        if (!state->alive.load())
                          return;
                        queue->dispatch(
-                           [self, state, gen, cand = std::move(cand)](Napi::Env env)
+                           [this, state, gen, cand = std::move(cand)](Napi::Env env)
                            {
-                             if (!state->alive.load() || self->mOnLocalCandidateGen != gen ||
-                                 self->mOnLocalCandidateFn.IsEmpty())
+                             if (!state->alive.load() || mOnLocalCandidateGen != gen || mOnLocalCandidateFn.IsEmpty())
                                throw ThreadSafeCallback::CancelException();
-                             self->mOnLocalCandidateFn.Call(
+                             mOnLocalCandidateFn.Call(
                                  {Napi::String::New(env, std::string(cand)), Napi::String::New(env, cand.mid())});
                            });
                      });
@@ -904,17 +903,16 @@ void PeerConnectionWrapper::onIceStateChange(const Napi::CallbackInfo &info)
                [this](auto state, auto queue, uint64_t gen)
                {
                  mRtcPeerConnPtr->onIceStateChange(
-                     [self = this, state, queue, gen](rtc::PeerConnection::IceState iceState)
+                     [this, state, queue, gen](rtc::PeerConnection::IceState iceState)
                      {
                        if (!state->alive.load())
                          return;
                        queue->dispatch(
-                           [self, state, gen, iceState](Napi::Env env)
+                           [this, state, gen, iceState](Napi::Env env)
                            {
-                             if (!state->alive.load() || self->mOnIceStateChangeGen != gen ||
-                                 self->mOnIceStateChangeFn.IsEmpty())
+                             if (!state->alive.load() || mOnIceStateChangeGen != gen || mOnIceStateChangeFn.IsEmpty())
                                throw ThreadSafeCallback::CancelException();
-                             self->mOnIceStateChangeFn.Call({Napi::String::New(env, iceStateToString(iceState))});
+                             mOnIceStateChangeFn.Call({Napi::String::New(env, iceStateToString(iceState))});
                            });
                      });
                });
@@ -926,17 +924,17 @@ void PeerConnectionWrapper::onSignalingStateChange(const Napi::CallbackInfo &inf
                [this](auto state, auto queue, uint64_t gen)
                {
                  mRtcPeerConnPtr->onSignalingStateChange(
-                     [self = this, state, queue, gen](rtc::PeerConnection::SignalingState sigState)
+                     [this, state, queue, gen](rtc::PeerConnection::SignalingState sigState)
                      {
                        if (!state->alive.load())
                          return;
                        queue->dispatch(
-                           [self, state, gen, sigState](Napi::Env env)
+                           [this, state, gen, sigState](Napi::Env env)
                            {
-                             if (!state->alive.load() || self->mOnSignalingStateChangeGen != gen ||
-                                 self->mOnSignalingStateChangeFn.IsEmpty())
+                             if (!state->alive.load() || mOnSignalingStateChangeGen != gen ||
+                                 mOnSignalingStateChangeFn.IsEmpty())
                                throw ThreadSafeCallback::CancelException();
-                             self->mOnSignalingStateChangeFn.Call(
+                             mOnSignalingStateChangeFn.Call(
                                  {Napi::String::New(env, signalingStateToString(sigState))});
                            });
                      });
@@ -949,17 +947,17 @@ void PeerConnectionWrapper::onGatheringStateChange(const Napi::CallbackInfo &inf
                [this](auto state, auto queue, uint64_t gen)
                {
                  mRtcPeerConnPtr->onGatheringStateChange(
-                     [self = this, state, queue, gen](rtc::PeerConnection::GatheringState gathState)
+                     [this, state, queue, gen](rtc::PeerConnection::GatheringState gathState)
                      {
                        if (!state->alive.load())
                          return;
                        queue->dispatch(
-                           [self, state, gen, gathState](Napi::Env env)
+                           [this, state, gen, gathState](Napi::Env env)
                            {
-                             if (!state->alive.load() || self->mOnGatheringStateChangeGen != gen ||
-                                 self->mOnGatheringStateChangeFn.IsEmpty())
+                             if (!state->alive.load() || mOnGatheringStateChangeGen != gen ||
+                                 mOnGatheringStateChangeFn.IsEmpty())
                                throw ThreadSafeCallback::CancelException();
-                             self->mOnGatheringStateChangeFn.Call(
+                             mOnGatheringStateChangeFn.Call(
                                  {Napi::String::New(env, gatheringStateToString(gathState))});
                            });
                      });
@@ -972,21 +970,20 @@ void PeerConnectionWrapper::onDataChannel(const Napi::CallbackInfo &info)
                [this](auto state, auto queue, uint64_t gen)
                {
                  mRtcPeerConnPtr->onDataChannel(
-                     [self = this, state, queue, gen](std::shared_ptr<rtc::DataChannel> dc)
+                     [this, state, queue, gen](std::shared_ptr<rtc::DataChannel> dc)
                      {
                        if (!state->alive.load())
                          return;
                        queue->dispatch(
-                           [self, state, gen, dc = std::move(dc)](Napi::Env env) mutable
+                           [this, state, gen, dc = std::move(dc)](Napi::Env env) mutable
                            {
-                             if (!state->alive.load() || self->mOnDataChannelGen != gen ||
-                                 self->mOnDataChannelFn.IsEmpty())
+                             if (!state->alive.load() || mOnDataChannelGen != gen || mOnDataChannelFn.IsEmpty())
                                throw ThreadSafeCallback::CancelException();
 
                              auto *data = getAddonData(env);
                              auto instance = data->dataChannelCtor.New(
                                  {Napi::External<std::shared_ptr<rtc::DataChannel>>::New(env, &dc)});
-                             self->mOnDataChannelFn.Call({instance});
+                             mOnDataChannelFn.Call({instance});
                            });
                      });
                });
@@ -1191,20 +1188,20 @@ void PeerConnectionWrapper::onTrack(const Napi::CallbackInfo &info)
                [this](auto state, auto queue, uint64_t gen)
                {
                  mRtcPeerConnPtr->onTrack(
-                     [self = this, state, queue, gen](std::shared_ptr<rtc::Track> track)
+                     [this, state, queue, gen](std::shared_ptr<rtc::Track> track)
                      {
                        if (!state->alive.load())
                          return;
                        queue->dispatch(
-                           [self, state, gen, track = std::move(track)](Napi::Env env) mutable
+                           [this, state, gen, track = std::move(track)](Napi::Env env) mutable
                            {
-                             if (!state->alive.load() || self->mOnTrackGen != gen || self->mOnTrackFn.IsEmpty())
+                             if (!state->alive.load() || mOnTrackGen != gen || mOnTrackFn.IsEmpty())
                                throw ThreadSafeCallback::CancelException();
 
                              auto *data = getAddonData(env);
                              auto instance =
                                  data->trackCtor.New({Napi::External<std::shared_ptr<rtc::Track>>::New(env, &track)});
-                             self->mOnTrackFn.Call({instance});
+                             mOnTrackFn.Call({instance});
                            });
                      });
                });
